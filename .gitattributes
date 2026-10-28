@@ -1,0 +1,13 @@
+# 批处理必须是 CRLF：LF-only 的 .bat 会让 cmd 解析错乱，
+# 典型症状是 cd /d "%~dp0" 那一行报「'D:\...\' 不是内部或外部命令」。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Python 与文档统一 LF，避免跨平台 diff 噪声
+*.py   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.html text eol=lf
