@@ -122,11 +122,17 @@
   /* 折叠态只留一行：名称 + 内存/磁盘环形饼图 */
   .card-head .grow { min-width: 0; }
   .card-mini { display: none; }
-  .mini-item { display: inline-flex; align-items: center; gap: 4px; }
-  .mini-item svg { display: block; }
+  .mini-item { display: inline-flex; align-items: center; gap: 3px; }
+  .mini-item svg { display: block; flex: none; }
   .mini-item b { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .pie-track { fill: none; stroke: var(--bar); stroke-width: 4; }
-  .pie-fill { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }
+  .mini-count {
+    display: inline-flex; align-items: center; gap: 2px;
+    font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  .mini-count b { color: var(--text); font-weight: 600; }
+  .mini-count svg, .mini-ico { stroke: currentColor; fill: none; stroke-width: 1.6; }
+  .pie-track { fill: none; stroke: var(--bar); stroke-width: 3.2; }
+  .pie-fill { fill: none; stroke: var(--accent); stroke-width: 3.2; stroke-linecap: round; }
   .mini-item.hot .pie-fill { stroke: var(--warn); }
   .mini-item.crit .pie-fill { stroke: var(--bad); }
   .mini-item.hot b { color: var(--warn); }
@@ -135,7 +141,7 @@
   #cards.collapsed .card > :not(.card-head) { display: none; }
   #cards.collapsed .card-head { align-items: center; }
   #cards.collapsed .card-sub { display: none; }
-  #cards.collapsed .card-mini { display: flex; gap: 12px; margin-left: auto; }
+  #cards.collapsed .card-mini { display: flex; gap: 12px; margin-left: auto; align-items: center; }
   .error-box {
     background: color-mix(in srgb, var(--bad) 12%, transparent);
     border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
@@ -538,19 +544,40 @@ function meter(label, used, pct) {
     </div>`;
 }
 
-// 折叠态用的小环形饼图：26px 环 + 百分比，阈值与展开态的进度条一致
-function pie(pct, label) {
+// 折叠态的小指标：环 + 环心图标 + 右侧百分比，悬停给完整文案
+const MINI_ICONS = {
+  cpu: '<rect x="7.5" y="7.5" width="9" height="9" rx="1.4"></rect><rect x="10.9" y="10.9" width="2.2" height="2.2" rx=".4"></rect>',
+  mem: '<rect x="6" y="8.6" width="12" height="6.2" rx="1.3"></rect><path d="M9.4 14.8v2.3M12 14.8v2.3M14.6 14.8v2.3"></path>',
+  disk: '<ellipse cx="12" cy="8.6" rx="5.4" ry="2.1"></ellipse><path d="M6.6 8.6v6.2c0 1.2 2.4 2.1 5.4 2.1s5.4-.9 5.4-2.1V8.6"></path>',
+};
+const MINI_TEXT = { cpu: "CPU 使用率", mem: "内存占用", disk: "磁盘占用" };
+
+function miniPct(pct) {
+  if (pct === null || pct === undefined) return "—";
+  return pct < 1 ? pct.toFixed(1) + "%" : Math.round(pct) + "%";
+}
+
+function mini(pct, kind) {
   const cls = pct == null ? "" : pct >= 90 ? "crit" : pct >= 70 ? "hot" : "";
   const r = 9, c = 2 * Math.PI * r;
   const dash = pct == null ? 0 : (Math.min(100, Math.max(0, pct)) * c) / 100;
-  const text = pct == null ? "—" : Math.round(pct) + "%";
-  const tip = `${label}占用 ${pct == null ? "—" : pct.toFixed(1) + "%"}`;
+  const tip = `${MINI_TEXT[kind]} ${pct == null ? "—" : pct.toFixed(1) + "%"}`;
   return `<span class="mini-item ${cls}" title="${tip}">
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
         <circle class="pie-track" cx="12" cy="12" r="${r}"></circle>
         <circle class="pie-fill" cx="12" cy="12" r="${r}"
           stroke-dasharray="${dash.toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 12 12)"></circle>
-      </svg><b>${text}</b></span>`;
+        <g class="mini-ico">${MINI_ICONS[kind]}</g>
+      </svg><b>${miniPct(pct)}</b></span>`;
+}
+
+// 「已开机 / 总数」：电源图标说明分子分母是什么，别让人只看到 4/17 猜
+function countMini(on, total) {
+  const tip = on == null ? "开机数未知" : `已开机 ${on} 台 / 共 ${total} 台虚拟机`;
+  return `<span class="mini-count" title="${tip}">
+      <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+        <path d="M12 4.5v6"></path><path d="M7.6 7.6a6.4 6.4 0 1 0 8.8 0"></path>
+      </svg><b>${on == null ? "—" : on + "/" + total}</b></span>`;
 }
 
 function applyCollapse() {
@@ -573,7 +600,7 @@ function cardHtml(item) {
             <div class="card-title">${esc(item.name)}</div>
             <div class="card-sub">${esc(item.host)}:${esc(item.port)}</div>
           </div>
-          <div class="card-mini">${pie(null, "内存")}${pie(null, "磁盘")}</div>
+          <div class="card-mini">${mini(null, "cpu")}${mini(null, "mem")}${mini(null, "disk")}</div>
         </div>
         <div class="error-box"><b>离线</b>（${esc(err.kind)}）<br>${esc(err.message)}</div>
         <div class="card-foot"><span class="card-sub">账号 ${esc(item.user)}</span></div>
@@ -593,7 +620,7 @@ function cardHtml(item) {
           <div class="card-title">${esc(item.name)}</div>
           <div class="card-sub">${esc(item.host)}:${esc(item.port)} · ${esc(s.hostname || "")}</div>
         </div>
-        <div class="card-mini">${pie(s.mem_usage_pct, "内存")}${pie(dsPct, "磁盘")}</div>
+        <div class="card-mini">${countMini(s.vm_on, s.vm_total)}${mini(s.cpu_usage_pct, "cpu")}${mini(s.mem_usage_pct, "mem")}${mini(dsPct, "disk")}</div>
       </div>
       <div class="kv">
         <div><dt>版本</dt><dd>ESXi ${esc(s.version || "—")} build ${esc(s.build || "—")}</dd></div>
