@@ -1,0 +1,5 @@
+# vm-bord-launcher 的 bundle patch：向 web profile 插入一行，宿主半区是本包的主入口，
+# 浏览器半区由 dsh.client 声明（package.json 里的 dsh.client.platform = web）。
+- insert:
+    - id: vm-bord-launcher
+      name: vm-bord-launcher

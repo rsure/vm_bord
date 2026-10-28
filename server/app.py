@@ -1,4 +1,4 @@
-"""vm_bord 本地服务：标准库 HTTP 服务 + JSON API + 静态页面。
+﻿"""vm_bord 本地服务：标准库 HTTP 服务 + JSON API + 静态页面。
 
 只监听 127.0.0.1，给本机浏览器用。端口默认 8787，被占用就往后顺延。
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import threading
@@ -24,7 +25,7 @@ import store
 PORT_BASE = 8787
 PORT_SPAN = 12
 WEB_DIR = store.ROOT / "web"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 # 采集一台主机的墙钟上限：ESXi 卡住时不能把整个页面拖死。
 COLLECT_TIMEOUT = 10.0
@@ -48,17 +49,39 @@ def _json_bytes(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False).encode("utf-8")
 
 
+# DSH 面板跑在 127.0.0.1:<另一个端口> 上，浏览器里跨端口就是跨域。
+# 只对"本机来源"放行，互联网上的页面拿不到这个头，也就没法驱动本机电源操作。
+_LOCAL_ORIGIN = re.compile(r"^http://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$")
+
+_SERVER: "ThreadingHTTPServer | None" = None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"vm_bord/{VERSION}"
     protocol_version = "HTTP/1.1"
 
     # ---- 基础应答 -------------------------------------------------------
+    def _cors(self):
+        """只给本机来源的 /api/* 请求放行跨域。"""
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin or not _LOCAL_ORIGIN.match(origin):
+            return
+        if not urlparse(self.path).path.startswith("/api/"):
+            return
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "600")
+
     def _send(self, status: int, body: bytes, ctype: str, no_store: bool = True):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         if no_store:
             self.send_header("Cache-Control", "no-store")
+        self._cors()
         self.end_headers()
         if self.command != "HEAD":
             try:
@@ -94,6 +117,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):  # noqa: N802
         self._route("PUT")
 
+    def do_OPTIONS(self):  # noqa: N802
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self._cors()
+        self.end_headers()
+
     def _route(self, method: str):
         path = unquote(urlparse(self.path).path)
         try:
@@ -119,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._task(path[len("/api/tasks/"):])
             if method == "GET" and path == "/api/audit":
                 return self._audit()
+            if method == "POST" and path == "/api/shutdown":
+                return self._shutdown()
             return self._fail(404, "not_found", f"没有这个接口：{path}")
         except BrokenPipeError:
             pass
@@ -320,6 +351,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _audit(self):
         self._json(200, {"ok": True, "items": store.read_audit(200)})
+
+    def _shutdown(self):
+        """给 DSH 面板的"停止"按钮用：先回话，再让服务自己退出。"""
+        if _SERVER is None:
+            return self._fail(503, "not_ready", "服务还没完全起来")
+        self._json(200, {"ok": True, "message": "服务正在退出"})
+        threading.Timer(0.2, _SERVER.shutdown).start()
 
     def _task(self, task_id: str):
         with _tasks_lock:
@@ -525,6 +563,8 @@ def main(argv=None) -> int:
             pass
 
     server, port = _bind(args.port)
+    global _SERVER
+    _SERVER = server
     url = f"http://127.0.0.1:{port}/"
     print(f"vm_bord 已启动：{url}")
     print(f"清单文件：{store.HOSTS_FILE}")

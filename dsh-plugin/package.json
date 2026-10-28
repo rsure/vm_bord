@@ -1,0 +1,32 @@
+{
+  "name": "vm-bord-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Desktop 启动器面板：启动/停止 vm_bord 本地看板，并在浏览器打开",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
