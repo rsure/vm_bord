@@ -303,6 +303,9 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True, "version": VERSION,
                     "port": self.server.server_port, "auth": _AUTH_ON,
                 })
+            if method == "GET" and path == "/static/favicon.ico":
+                # 图标不挡：登录页自己也要显示它，它只是张图片。
+                return self._serve_file(WEB_DIR / "favicon.ico", scoped=True)
             if not self._authed():
                 # 这里不读请求体，直接关连接：留着 body 在 socket 里，下一个
                 # keep-alive 请求会把它当成请求行，服务端报 400 后整条连接报废。
