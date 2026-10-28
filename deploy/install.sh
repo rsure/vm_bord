@@ -26,27 +26,54 @@ if [[ -z "$AUTH" ]]; then
   exit 1
 fi
 
-echo "== 1/6 检查系统依赖 =="
-missing=()
-for pkg in python3 python3-pip; do
-  rpm -q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
-done
-if ((${#missing[@]})); then
-  echo "安装 ${missing[*]}"
-  yum install -y "${missing[@]}"
-else
-  echo "python3 / python3-pip 已就绪：$(python3 -V 2>&1)"
-fi
+echo "== 1/6 选一个 >= 3.8 的 Python =="
+# 代码用了 from __future__ import annotations，Python 3.7+ 才有；
+# 而 CentOS 7 官方源只有 3.6.8，所以这里要么用更早装好的 conda/SCL 解释器，
+# 要么用 VMBORD_PYTHON 显式指定。
+pick_python() {
+  local candidates=() c ver
+  [[ -n "${VMBORD_PYTHON:-}" ]] && candidates+=("$VMBORD_PYTHON")
+  candidates+=(python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3
+               /usr/local/hk/tools/miniconda3/bin/python)
+  for c in "${candidates[@]}"; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    ver="$("$c" -c 'import sys;print("%d%d"%sys.version_info[:2])' 2>/dev/null || echo 0)"
+    if [[ "$ver" =~ ^[0-9]+$ ]] && (( ver >= 38 )); then
+      echo "$c"
+      return 0
+    fi
+  done
+  return 1
+}
 
-PY_VER="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
-echo "Python 版本：$PY_VER"
+if ! PY="$(pick_python)"; then
+  cat >&2 <<'EOF'
+没找到 Python 3.8 或更高版本。
+CentOS 7 官方源的 python3 是 3.6.8（本程序无法运行），SCL 源已随 EOL 失效。
+最省事的办法是装一个自带的 Miniconda：
+
+  curl -fsSL -o /tmp/miniconda.sh \
+    https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py38_4.12.0-Linux-x86_64.sh
+  bash /tmp/miniconda.sh -b -p /usr/local/hk/tools/miniconda3
+
+（新版 Miniconda 要求 glibc>=2.28，CentOS 7 只有 2.17，必须用 py38_4.12.0 这个版本。）
+
+装好后重跑：
+  sudo VMBORD_AUTH='账号:密码' bash deploy/install.sh 8787
+或者显式指定解释器：
+  sudo VMBORD_PYTHON=/opt/python3.10/bin/python3 VMBORD_AUTH='...' bash deploy/install.sh
+EOF
+  exit 1
+fi
+echo "使用解释器：$PY（$("$PY" -V 2>&1)）"
 
 echo "== 2/6 建虚拟环境 =="
 if [[ ! -x "$VENV/bin/python" ]]; then
-  if ! python3 -m venv "$VENV" >/dev/null 2>&1; then
-    echo "python3 -m venv 不可用，改用 --without-pip + get-pip 引导"
-    python3 -m venv --without-pip "$VENV"
-    curl -fsSL "https://bootstrap.pypa.io/pip/${PY_VER}/get-pip.py" | "$VENV/bin/python"
+  if ! "$PY" -m venv "$VENV" >/dev/null 2>&1; then
+    echo "venv 创建失败，尝试 --without-pip + get-pip 引导"
+    "$PY" -m venv --without-pip "$VENV"
+    curl -fsSL "https://bootstrap.pypa.io/pip/$( "$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])' )/get-pip.py" \
+      | "$VENV/bin/python"
   fi
 else
   echo "已存在：$VENV"
@@ -54,13 +81,8 @@ fi
 "$VENV/bin/python" -V
 
 echo "== 3/6 装 Python 依赖 =="
-"$VENV/bin/pip" install -q -U "pip<22" setuptools wheel
-if [[ "$PY_VER" == "3.6" ]]; then
-  # 3.6 只能装这几代：更新的 pyvmomi / cryptography 都要求 3.8+
-  "$VENV/bin/pip" install -q "pyvmomi==8.0.1.0" "cryptography==36.0.2"
-else
-  "$VENV/bin/pip" install -q -r "$APP_DIR/requirements.txt"
-fi
+"$VENV/bin/pip" install -q -U pip setuptools wheel
+"$VENV/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 "$VENV/bin/pip" list 2>/dev/null | grep -iE "pyvmomi|cryptography" || true
 
 echo "== 4/6 写登录口令 =="

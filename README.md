@@ -66,8 +66,18 @@ journalctl -u vm-bord -f      # 日志
 systemctl restart vm-bord     # 重启（改代码后）
 ```
 
-CentOS 7 官方源只有 Python 3.6.8，所以脚本在 3.6 上会固定装 `pyvmomi==8.0.1.0` + `cryptography==36.0.2`；
-更新的 Python 会按 `requirements.txt` 装最新版。
+CentOS 7 官方源的 `python3` 只有 3.6.8，而本程序用到了 `from __future__ import annotations`（3.7+），
+所以**不能用系统那个 python3**；SCL 源也已随 CentOS 7 EOL 失效。实践中用的是自带的 Miniconda：
+
+```bash
+curl -fsSL -o /tmp/miniconda.sh \
+  https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py38_4.12.0-Linux-x86_64.sh
+bash /tmp/miniconda.sh -b -p /usr/local/hk/tools/miniconda3   # 新版要求 glibc>=2.28，必须用 py38_4.12.0
+sudo VMBORD_AUTH='admin:admin@123' bash deploy/install.sh 8787
+```
+
+`install.sh` 会自动挑选 >=3.8 的解释器（含上面这个路径），也可以用 `VMBORD_PYTHON=/path/to/python3` 指定。
+`requirements.txt` 里用环境标记处理版本差异：Python <3.10 装 `pyvmomi 8.x`（9.x 起要求 3.10+）。
 
 Linux 上密码不再用 DPAPI（Windows 专有），改成 `data/secret.key`（0600）+ Fernet；
 `hosts.json` 里老 Windows 密文解不开是正常的，**服务器上需要重新录一次 ESXi 密码**。

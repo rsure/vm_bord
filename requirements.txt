@@ -1,5 +1,7 @@
+# pyvmomi 9.x 起要求 Python 3.10+，3.8/3.9 上要回退到 8.x。
+pyvmomi>=8.0.0,<9 ; python_version < "3.10"
+pyvmomi>=8.0.0 ; python_version >= "3.10"
+
 # Windows 上密码用 DPAPI 加密，不需要额外的加密库；
 # Linux / macOS 上用本机密钥文件 + Fernet，所以只有非 Windows 才装 cryptography。
-pyvmomi>=8.0.0
-
-cryptography>=3.4,<43; sys_platform != "win32"
+cryptography>=3.4 ; sys_platform != "win32"
