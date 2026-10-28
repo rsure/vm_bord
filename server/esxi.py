@@ -318,8 +318,15 @@ def collect_host(entry: dict, password: str, include_vms: bool = False) -> dict:
 # 电源操作
 # --------------------------------------------------------------------------
 
-POWER_LABEL = {"on": "开机", "shutdown": "优雅关机", "reboot": "优雅重启"}
-POWER_TIMEOUT = {"on": 120.0, "shutdown": 180.0, "reboot": 240.0}
+POWER_LABEL = {
+    "on": "开机",
+    "shutdown": "优雅关机",
+    "reboot": "优雅重启",
+    "poweroff": "强制断电",
+    "reset": "强制重置",
+}
+FORCE_ACTIONS = {"poweroff", "reset"}
+POWER_TIMEOUT = {"on": 120.0, "shutdown": 180.0, "reboot": 240.0, "poweroff": 90.0, "reset": 180.0}
 
 
 def _vm_by_moref(content, moref: str) -> vim.VirtualMachine:
@@ -412,11 +419,12 @@ def _wait_power(content, vm, done, timeout: float, label: str) -> dict:
         time.sleep(2.0)
 
 
-def power_op(entry: dict, password: str, moref: str, action: str) -> dict:
-    """开机 / 优雅关机 / 优雅重启。
+def power_op(entry: dict, password: str, moref: str, action: str,
+             confirm_name: str | None = None) -> dict:
+    """开机 / 优雅关机 / 优雅重启 / 强制断电 / 强制重置。
 
     优雅路径依赖客户机里的 VMware Tools：Tools 没跑就直接拒绝，而不是偷偷降级成
-    强制断电 —— 强制断电是另一件需要二次确认的事。
+    强制断电 —— 强制断电是另一件必须由人确认过、输入过虚拟机名字的事。
     """
     if action not in POWER_LABEL:
         raise EsxiError("bad_action", f"不认识的操作：{action}")
@@ -430,6 +438,27 @@ def power_op(entry: dict, password: str, moref: str, action: str) -> dict:
         vm = _vm_by_moref(content, moref)
         state = _read_state(content, vm)
         power = state["power"]
+
+        if action in FORCE_ACTIONS:
+            # 服务端自己再核一次名字：绕开页面直接打接口也不能把机器断掉。
+            if (confirm_name or "").strip() != vm.name:
+                raise EsxiError("confirm", f"确认名称不符，未执行（应输入：{vm.name}）")
+            if power != "poweredOn":
+                raise EsxiError("state", "这台虚拟机没有在运行，不需要这个操作")
+            if action == "poweroff":
+                _wait_task(vm.PowerOffVM_Task(), POWER_TIMEOUT["poweroff"])
+                state = _wait_power(
+                    content, vm, lambda s: s["power"] != "poweredOn", 30.0, "断电"
+                )
+            else:
+                _wait_task(vm.ResetVM_Task(), POWER_TIMEOUT["reset"])
+                state = _read_state(content, vm)
+            return {
+                "action": action,
+                "label": POWER_LABEL[action],
+                "name": vm.name,
+                "vm": _public_state(state),
+            }
 
         if action == "on":
             if power == "poweredOn":
@@ -480,7 +509,12 @@ def power_op(entry: dict, password: str, moref: str, action: str) -> dict:
                     )
                 time.sleep(2.0)
 
-        return {"action": action, "label": POWER_LABEL[action], "vm": _public_state(state)}
+        return {
+            "action": action,
+            "label": POWER_LABEL[action],
+            "name": vm.name,
+            "vm": _public_state(state),
+        }
     except EsxiError:
         raise
     except Exception as exc:  # noqa: BLE001

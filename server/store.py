@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 HOSTS_FILE = DATA_DIR / "hosts.json"
+AUDIT_FILE = DATA_DIR / "audit.jsonl"
 
 _LOCK = threading.Lock()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
@@ -121,6 +122,43 @@ def _write(doc: dict) -> None:
     tmp = HOSTS_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, HOSTS_FILE)
+
+
+# --------------------------------------------------------------------------
+# 审计流水
+# --------------------------------------------------------------------------
+
+_audit_lock = threading.Lock()
+
+
+def append_audit(record: dict) -> None:
+    """一行一条、只追加。审计文件不落库、不改写、不轮转。"""
+    ensure_data_dir()
+    line = json.dumps(record, ensure_ascii=False)
+    with _audit_lock:
+        with open(AUDIT_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+
+def read_audit(limit: int = 200) -> list[dict]:
+    """最近 limit 条审计记录，新的在前。"""
+    if not AUDIT_FILE.exists():
+        return []
+    try:
+        lines = AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    out.reverse()
+    return out
 
 
 def _public(entry: dict) -> dict:

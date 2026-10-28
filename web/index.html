@@ -183,11 +183,11 @@
   .pill.on { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
   .pill.off { background: var(--bar); color: var(--muted); }
   .pill.sus { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
-  td.acts { white-space: nowrap; }
+  td.acts { white-space: nowrap; position: relative; }
   button.act {
     font-size: 12px; line-height: 1; padding: 5px 9px; margin-right: 4px;
-    border-radius: 6px; border: 1px solid var(--line); background: transparent;
-    color: var(--fg); cursor: pointer;
+    border-radius: 6px; border: 1px solid var(--border); background: transparent;
+    color: var(--text); cursor: pointer;
   }
   button.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   button.act:disabled { opacity: .35; cursor: not-allowed; }
@@ -195,6 +195,52 @@
   button.act[data-act="reboot"]:not(:disabled) { color: var(--warn); }
   button.act[data-act="shutdown"]:hover:not(:disabled),
   button.act[data-act="reboot"]:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+  button.act.more { color: var(--muted); padding: 5px 7px; }
+  button.act.more[aria-expanded="true"] { border-color: var(--muted); color: var(--text); }
+
+  /* 危险操作二级菜单 */
+  .menu {
+    position: absolute; right: 10px; top: calc(100% - 4px); z-index: 30;
+    min-width: 128px; padding: 4px; text-align: left;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: var(--shadow);
+  }
+  .menu button {
+    display: block; width: 100%; text-align: left; padding: 7px 10px;
+    border: 0; border-radius: 6px; background: transparent;
+    color: var(--bad); font-size: 12.5px;
+  }
+  .menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .menu .menu-note {
+    padding: 4px 10px 6px; font-size: 11px; color: var(--muted);
+    border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  }
+
+  /* 危险操作确认弹窗 */
+  .modal {
+    position: fixed; inset: 0; z-index: 70; display: none;
+    place-items: center; background: rgba(8, 10, 14, .5);
+  }
+  .modal.open { display: grid; }
+  .modal-card {
+    width: min(460px, 92vw); padding: 20px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  .modal-card h3 { margin: 0 0 10px; font-size: 15px; color: var(--bad); }
+  .modal-card p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .modal-card code {
+    padding: 1px 5px; border-radius: 4px; background: var(--bar); color: var(--text);
+    font-size: 12.5px;
+  }
+  .modal-card label.check {
+    display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-bottom: 12px;
+  }
+  .modal-card input[type="text"] { width: 100%; }
+  .modal-card .check-label { display: block; margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); opacity: .9; }
   tr.detail > td { background: var(--bg); padding: 0; border-bottom: 1px solid var(--border); }
   .detail-body {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -344,6 +390,23 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="modal" id="danger-modal" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="danger-title">
+    <h3 id="danger-title">危险操作</h3>
+    <p id="danger-desc"></p>
+    <label class="check">
+      <input type="checkbox" id="danger-ack">
+      <span>我明白这会让客户机立刻中断，未保存的数据会丢失</span>
+    </label>
+    <label for="danger-input" class="check-label">输入虚拟机名称 <code id="danger-name"></code> 以确认</label>
+    <input type="text" id="danger-input" autocomplete="off" spellcheck="false" placeholder="直接复制上面的名称">
+    <div class="modal-actions">
+      <button type="button" id="danger-cancel">取消</button>
+      <button type="button" class="danger" id="danger-go" disabled>执行</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const cardsEl = $("cards"), stamp = $("stamp"), emptyEl = $("empty");
@@ -362,6 +425,8 @@ const state = {
   sort: { key: "name", dir: 1 },
   open: new Set(),
   busy: {},
+  menu: null,          // 展开危险操作二级菜单的行
+  danger: null,        // 正在确认的危险操作 {vm, action}
 };
 
 function esc(value) {
@@ -492,11 +557,21 @@ function rowHtml(vm) {
   const guard = vm.power !== "poweredOn"
     ? "虚拟机没有在运行"
     : "客户机 VMware Tools 没在运行，只能用强制断电";
+  const menuOpen = state.menu === key;
+  const canForce = !busy && vm.power === "poweredOn";
   const acts = busy
     ? `<button class="act" disabled>${esc(BUSY_TEXT[busy] || "处理中…")}</button>`
     : `<button class="act" data-act="on"${canOn ? "" : " disabled"} title="${esc(canOn ? "开机" : "已经是开机状态")}">开机</button>
        <button class="act" data-act="shutdown"${canGraceful ? "" : " disabled"} title="${esc(canGraceful ? "走客户机自身的关机流程" : guard)}">关机</button>
-       <button class="act" data-act="reboot"${canGraceful ? "" : " disabled"} title="${esc(canGraceful ? "走客户机自身的重启流程" : guard)}">重启</button>`;
+       <button class="act" data-act="reboot"${canGraceful ? "" : " disabled"} title="${esc(canGraceful ? "走客户机自身的重启流程" : guard)}">重启</button>
+       <button class="act more" data-more="1" aria-expanded="${menuOpen}" title="强制操作（会丢数据）">⋯</button>
+       ${menuOpen ? `<div class="menu">
+         <div class="menu-note">强制操作，不动客户机</div>
+         <button data-force="poweroff"${canForce ? "" : " disabled"}
+           title="${esc(canForce ? "相当于拔电源" : "虚拟机没有在运行")}">强制断电</button>
+         <button data-force="reset"${canForce ? "" : " disabled"}
+           title="${esc(canForce ? "相当于按复位键" : "虚拟机没有在运行")}">强制重置</button>
+       </div>` : ""}`;
   const detail = open ? `
     <tr class="detail"><td colspan="9"><dl class="detail-body">
       <div><dt>CPU</dt><dd>${esc(vm.num_cpu ?? "—")} 核</dd></div>
@@ -623,16 +698,20 @@ async function pollTask(id) {
   throw new Error("等太久还没结果，请点刷新确认");
 }
 
-async function runPower(vm, action) {
+async function runPower(vm, action, extra) {
   const key = vmKey(vm);
   if (state.busy[key]) return;
   state.busy[key] = action;
+  state.menu = null;
   renderTable();
   try {
     const res = await fetch("/api/vms/power", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host_id: vm.host_id, moref: vm.moref, action }),
+      body: JSON.stringify(Object.assign(
+        { host_id: vm.host_id, moref: vm.moref, action, name: vm.name },
+        extra || {},
+      )),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error?.message || "提交失败");
@@ -654,7 +733,63 @@ async function runPower(vm, action) {
   }
 }
 
+const FORCE_TEXT = { poweroff: "强制断电", reset: "强制重置" };
+
+function openDanger(vm, action) {
+  state.danger = { vm, action };
+  state.menu = null;          // 收起二级菜单，别和弹窗叠在一起
+  renderTable();
+  $("danger-title").textContent = FORCE_TEXT[action] || "危险操作";
+  $("danger-desc").innerHTML = action === "poweroff"
+    ? `相当于直接拔掉 <b>${esc(vm.name)}</b> 的电源，客户机里的未保存数据会丢。`
+    : `相当于按 <b>${esc(vm.name)}</b> 的复位键，客户机不会走关机流程，未保存数据会丢。`;
+  $("danger-name").textContent = vm.name;
+  $("danger-ack").checked = false;
+  $("danger-input").value = "";
+  $("danger-go").disabled = true;
+  $("danger-modal").classList.add("open");
+  $("danger-modal").setAttribute("aria-hidden", "false");
+  $("danger-input").focus();
+}
+
+function closeDanger() {
+  state.danger = null;
+  $("danger-modal").classList.remove("open");
+  $("danger-modal").setAttribute("aria-hidden", "true");
+}
+
+function dangerReady() {
+  const d = state.danger;
+  if (!d) return false;
+  return $("danger-ack").checked && $("danger-input").value.trim() === d.vm.name;
+}
+
+$("danger-ack").onchange = () => { $("danger-go").disabled = !dangerReady(); };
+$("danger-input").oninput = () => { $("danger-go").disabled = !dangerReady(); };
+$("danger-cancel").onclick = closeDanger;
+$("danger-modal").onclick = (e) => { if (e.target === $("danger-modal")) closeDanger(); };
+$("danger-go").onclick = () => {
+  const d = state.danger;
+  if (!d || !dangerReady()) return;
+  closeDanger();
+  runPower(d.vm, d.action, { confirm_name: d.vm.name });
+};
+
 $("vm-body").onclick = (e) => {
+  const moreBtn = e.target.closest("button[data-more]");
+  if (moreBtn) {
+    const key = moreBtn.closest("tr.row").dataset.key;
+    state.menu = state.menu === key ? null : key;
+    renderTable();
+    return;
+  }
+  const forceBtn = e.target.closest("button[data-force]");
+  if (forceBtn && !forceBtn.disabled) {
+    const key = forceBtn.closest("tr.row").dataset.key;
+    const vm = state.vms.find((v) => vmKey(v) === key);
+    if (vm) openDanger(vm, forceBtn.dataset.force);
+    return;
+  }
   const actBtn = e.target.closest("button.act");
   if (actBtn) {
     const row = actBtn.closest("tr.row");
@@ -663,6 +798,7 @@ $("vm-body").onclick = (e) => {
     if (vm && actBtn.dataset.act) runPower(vm, actBtn.dataset.act);
     return;
   }
+  if (state.menu) { state.menu = null; renderTable(); }
   const tr = e.target.closest("tr.row");
   if (!tr) return;
   const key = tr.dataset.key;

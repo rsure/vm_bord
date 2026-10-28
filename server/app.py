@@ -24,7 +24,7 @@ import store
 PORT_BASE = 8787
 PORT_SPAN = 12
 WEB_DIR = store.ROOT / "web"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # 采集一台主机的墙钟上限：ESXi 卡住时不能把整个页面拖死。
 COLLECT_TIMEOUT = 10.0
@@ -110,6 +110,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._power()
             if method == "GET" and path.startswith("/api/tasks/"):
                 return self._task(path[len("/api/tasks/"):])
+            if method == "GET" and path == "/api/audit":
+                return self._audit()
             return self._fail(404, "not_found", f"没有这个接口：{path}")
         except BrokenPipeError:
             pass
@@ -202,11 +204,15 @@ class Handler(BaseHTTPRequestHandler):
         host_id = str(payload.get("host_id") or "").strip()
         moref = str(payload.get("moref") or "").strip()
         action = str(payload.get("action") or "").strip()
+        confirm_name = str(payload.get("confirm_name") or "").strip()
+        vm_name = str(payload.get("name") or "").strip()
 
         if action not in esxi.POWER_LABEL:
             return self._fail(400, "bad_action", f"不认识的操作：{action or '（空）'}")
         if not host_id or not moref:
             return self._fail(400, "bad_request", "缺少 host_id 或 moref")
+        if action in esxi.FORCE_ACTIONS and not confirm_name:
+            return self._fail(400, "confirm", "危险操作必须先输入虚拟机名称确认")
 
         entry = store.get_host(host_id, with_secret=True)
         if not entry:
@@ -216,13 +222,16 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             return self._fail(500, "secret", f"密码解密失败：{exc}")
 
-        task = _new_task(host_id, moref, action)
+        task = _new_task(host_id, moref, action, vm_name)
         threading.Thread(
             target=_run_power,
-            args=(task["id"], entry, password, moref, action),
+            args=(task["id"], entry, password, moref, action, confirm_name, vm_name),
             daemon=True,
         ).start()
         self._json(202, {"ok": True, "task": dict(task)})
+
+    def _audit(self):
+        self._json(200, {"ok": True, "items": store.read_audit(200)})
 
     def _task(self, task_id: str):
         with _tasks_lock:
@@ -239,13 +248,14 @@ _tasks_lock = threading.Lock()
 TASK_LIMIT = 50
 
 
-def _new_task(host_id: str, moref: str, action: str) -> dict:
+def _new_task(host_id: str, moref: str, action: str, name: str = "") -> dict:
     task = {
         "id": "t_" + secrets.token_hex(8),
         "action": action,
         "label": esxi.POWER_LABEL[action],
         "host_id": host_id,
         "moref": moref,
+        "name": name,
         "state": "running",
         "message": f"{esxi.POWER_LABEL[action]}中…",
         "error": None,
@@ -266,11 +276,13 @@ def _invalidate_cache() -> None:
         _cache["ts"] = 0.0
 
 
-def _run_power(task_id: str, entry: dict, password: str, moref: str, action: str) -> None:
+def _run_power(task_id: str, entry: dict, password: str, moref: str, action: str,
+               confirm_name: str = "", fallback_name: str = "") -> None:
     """在后台线程里跑完整条操作链，页面靠轮询任务状态看进展。"""
     result, error = None, None
+    started = time.time()
     try:
-        result = esxi.power_op(entry, password, moref, action)
+        result = esxi.power_op(entry, password, moref, action, confirm_name)
     except esxi.EsxiError as exc:
         error = {"kind": exc.kind, "message": exc.message}
     except Exception as exc:  # noqa: BLE001
@@ -288,9 +300,28 @@ def _run_power(task_id: str, entry: dict, password: str, moref: str, action: str
         else:
             task["state"] = "done"
             task["vm"] = result["vm"]
+            task["name"] = result.get("name") or task.get("name") or fallback_name
             task["message"] = f"{result['label']}完成"
 
     _invalidate_cache()
+
+    # 不管成败都留一条审计流水，只追加。
+    try:
+        store.append_audit({
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "host_id": entry.get("id"),
+            "host": entry.get("host"),
+            "vm": (result or {}).get("name") or fallback_name or None,
+            "moref": moref,
+            "action": action,
+            "label": esxi.POWER_LABEL.get(action),
+            "force": action in esxi.FORCE_ACTIONS,
+            "ok": error is None,
+            "error": (error or {}).get("message"),
+            "seconds": round(time.time() - started, 1),
+        })
+    except OSError:
+        pass
 
 
 def _collect_one(item: dict) -> dict:
