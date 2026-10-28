@@ -24,7 +24,7 @@ import store
 PORT_BASE = 8787
 PORT_SPAN = 12
 WEB_DIR = store.ROOT / "web"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # 采集一台主机的墙钟上限：ESXi 卡住时不能把整个页面拖死。
 COLLECT_TIMEOUT = 10.0
@@ -91,6 +91,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         self._route("POST")
 
+    def do_PUT(self):  # noqa: N802
+        self._route("PUT")
+
     def _route(self, method: str):
         path = unquote(urlparse(self.path).path)
         try:
@@ -106,6 +109,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._inventory()
             if method == "POST" and path == "/api/hosts":
                 return self._add_host()
+            if method == "PUT" and path.startswith("/api/hosts/"):
+                return self._edit_host(path[len("/api/hosts/"):])
+            if method == "POST" and path.startswith("/api/hosts/") and path.endswith("/delete"):
+                return self._delete_host(path[len("/api/hosts/"):-len("/delete")])
             if method == "POST" and path == "/api/vms/power":
                 return self._power()
             if method == "GET" and path.startswith("/api/tasks/"):
@@ -191,6 +198,87 @@ class Handler(BaseHTTPRequestHandler):
             return self._fail(409, "duplicate", str(exc))
 
         self._json(201, {"ok": True, "host": entry, "info": info})
+
+    def _edit_host(self, host_id: str):
+        try:
+            payload = self._body()
+        except ValueError as exc:
+            return self._fail(400, "bad_json", str(exc))
+
+        entry = store.get_host(host_id, with_secret=True)
+        if not entry:
+            return self._fail(404, "not_found", "这台主机已经不在清单里了")
+
+        host = str(payload.get("host") or entry["host"]).strip()
+        user = str(payload.get("user") or entry["user"]).strip()
+        name = str(payload.get("name") or entry["name"]).strip() or host
+        try:
+            port = int(payload.get("port") or entry.get("port") or 443)
+        except (TypeError, ValueError):
+            return self._fail(400, "bad_port", "端口必须是数字")
+        if not (1 <= port <= 65535):
+            return self._fail(400, "bad_port", "端口必须在 1-65535 之间")
+
+        # 密码留空 = 不改：解出原来那份继续用，绝不覆盖成空。
+        password = str(payload.get("password") or "")
+        if not password:
+            try:
+                password = store.secret_of(entry)
+            except OSError as exc:
+                return self._fail(500, "secret", f"密码解密失败：{exc}")
+        if not password:
+            return self._fail(400, "missing_password", "还没有存过密码，请先填写登录密码")
+
+        # 改完必须能连上，否则不落盘 —— 别把能用的配置改成不能用的。
+        try:
+            info = esxi.probe(host, port, user, password)
+        except esxi.EsxiError as exc:
+            return self._fail(400, exc.kind, f"连不上 {host}:{port} —— {exc.message}")
+
+        old_fp = entry.get("fingerprint")
+        new_fp = info.get("fingerprint")
+        try:
+            updated = store.update_host(host_id, {
+                "name": name, "host": host, "port": port,
+                "user": user, "password": password,
+            }, new_fp)
+        except KeyError:
+            return self._fail(404, "not_found", "这台主机已经不在清单里了")
+        _invalidate_cache()
+        self._json(200, {
+            "ok": True,
+            "host": updated,
+            "fingerprint": new_fp,
+            "fingerprint_changed": bool(old_fp and new_fp and old_fp != new_fp),
+        })
+
+    def _delete_host(self, host_id: str):
+        try:
+            payload = self._body()
+        except ValueError as exc:
+            return self._fail(400, "bad_json", str(exc))
+
+        entry = store.get_host(host_id)
+        if not entry:
+            return self._fail(404, "not_found", "这台主机已经不在清单里了")
+        confirm = str(payload.get("confirm") or "").strip()
+        if confirm != entry["host"]:
+            return self._fail(400, "confirm", f"确认地址不符，请原样输入：{entry['host']}")
+
+        store.delete_host(host_id)
+        _invalidate_cache()
+        self._json(200, {"ok": True, "removed": entry["id"], "host": entry["host"]})
+
+    # ---- 请求体 ---------------------------------------------------------
+    def _body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("请求体不是合法 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是对象")
+        return payload
 
     def _power(self):
         try:
@@ -372,6 +460,11 @@ def _build_inventory() -> dict:
     vms = []
     for item in entries:
         stats = item.get("stats") or {}
+        now_fp = stats.get("fingerprint")
+        stored_fp = item.get("fingerprint")
+        item["fingerprint_now"] = now_fp
+        # 证书换了 = 可能重装过 ESXi，也可能有人在中间，卡片上必须说出来。
+        item["fingerprint_changed"] = bool(now_fp and stored_fp and now_fp != stored_fp)
         for vm in stats.pop("vms", None) or []:
             vms.append({
                 **vm,

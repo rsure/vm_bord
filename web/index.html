@@ -288,6 +288,37 @@
   }
   .host-item .name { font-weight: 600; }
   .host-item .mono { color: var(--muted); }
+  .host-item.editing { border-color: var(--accent); }
+  .host-head { display: flex; align-items: center; gap: 8px; }
+  .host-head .name {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .host-ops { margin-left: auto; display: flex; gap: 6px; flex: 0 0 auto; }
+  .host-ops button { font-size: 12px; padding: 3px 8px; }
+  .host-ops button.danger-text { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
+  .host-ops button.danger-text:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+  .tag {
+    font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 99px;
+    background: var(--bar); color: var(--muted);
+  }
+  .tag.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+  .remove-box {
+    margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border);
+    font-size: 12.5px; color: var(--muted);
+  }
+  .remove-box input { width: 100%; margin: 7px 0; background: var(--panel); }
+  .remove-ops { display: flex; gap: 8px; justify-content: flex-end; }
+  .remove-ops button { font-size: 12px; padding: 4px 10px; }
+  .remove-ops button.danger { color: #fff; }
+  .danger-text { color: var(--bad); }
+  .form-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .form-actions { display: flex; gap: 8px; align-items: center; }
+  .warn-box {
+    margin-top: 10px; padding: 8px 10px; border-radius: 7px; font-size: 12px;
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+    color: var(--text);
+  }
   .toast {
     position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
     background: var(--panel); border: 1px solid var(--border);
@@ -353,6 +384,7 @@
   </div>
   <div class="drawer-body">
     <form id="form-add">
+      <div class="form-title" id="form-title">接入一台 ESXi 主机</div>
       <div class="field">
         <label for="f-name">显示名称（可留空，默认用地址）</label>
         <input id="f-name" autocomplete="off" placeholder="比如 ESXi-152">
@@ -374,11 +406,14 @@
         </div>
         <div class="field">
           <label for="f-pass">密码</label>
-          <input id="f-pass" type="password" required autocomplete="new-password">
+          <input id="f-pass" type="password" autocomplete="new-password">
         </div>
       </div>
-      <button class="primary" type="submit" id="btn-save">验证并保存</button>
-      <p class="hint">密码用 Windows DPAPI 加密后存在本机 data/hosts.json，页面不会回显。</p>
+      <div class="form-actions">
+        <button class="primary" type="submit" id="btn-save">验证并保存</button>
+        <button type="button" id="btn-cancel-edit" hidden>取消编辑</button>
+      </div>
+      <p class="hint" id="form-hint">密码用 Windows DPAPI 加密后存在本机 data/hosts.json，页面不会回显。</p>
     </form>
 
     <div>
@@ -427,6 +462,8 @@ const state = {
   busy: {},
   menu: null,          // 展开危险操作二级菜单的行
   danger: null,        // 正在确认的危险操作 {vm, action}
+  editing: null,       // 抽屉里正在编辑的主机 id
+  removing: null,      // 抽屉里正在确认移除的主机 id
 };
 
 function esc(value) {
@@ -480,7 +517,7 @@ function cardHtml(item) {
             <div class="card-sub">${esc(item.host)}:${esc(item.port)}</div>
           </div>
         </div>
-        <div class="error-box"><b>连不上</b>（${esc(err.kind)}）<br>${esc(err.message)}</div>
+        <div class="error-box"><b>离线</b>（${esc(err.kind)}）<br>${esc(err.message)}</div>
         <div class="card-foot"><span class="card-sub">账号 ${esc(item.user)}</span></div>
       </article>`;
   }
@@ -517,6 +554,12 @@ function cardHtml(item) {
         <a href="https://${esc(item.host)}/ui/" target="_blank" rel="noopener">打开 Host Client ↗</a>
         <span class="card-sub" style="margin-left:auto" title="证书 SHA256 指纹：${esc(s.fingerprint || "")}">${esc((s.fingerprint || "").slice(0, 17))}…</span>
       </div>
+      ${item.fingerprint_changed ? `
+      <div class="warn-box">
+        <b>证书换了</b>：现在连到的是 <span class="mono">${esc((item.fingerprint_now || "").slice(0, 17))}…</span>，
+        与接入时记录的 <span class="mono">${esc((item.fingerprint || "").slice(0, 17))}…</span> 不一致。
+        如果是重装过 ESXi 属正常，否则要当心。
+      </div>` : ""}
     </article>`;
 }
 
@@ -616,11 +659,30 @@ function renderPanel() {
   $("host-filter").value = state.host;
   $("host-list").innerHTML = state.items.length === 0
     ? `<div class="host-item mono">还没有接入主机</div>`
-    : state.items.map((h) => `
-        <div class="host-item">
-          <div class="name">${esc(h.name)}</div>
+    : state.items.map((h) => {
+      const removing = state.removing === h.id;
+      const editing = state.editing === h.id;
+      return `
+        <div class="host-item${editing ? " editing" : ""}">
+          <div class="host-head">
+            <div class="name">${esc(h.name)}${h.fingerprint_changed ? ` <span class="tag bad">证书变了</span>` : ""}</div>
+            <div class="host-ops">
+              <button type="button" data-edit="${esc(h.id)}">${editing ? "编辑中" : "编辑"}</button>
+              <button type="button" class="danger-text" data-remove="${esc(h.id)}">移除</button>
+            </div>
+          </div>
           <div class="mono">${esc(h.host)}:${esc(h.port)} · ${esc(h.user)}</div>
-        </div>`).join("");
+          ${removing ? `
+          <div class="remove-box">
+            <div>移除后这台主机上的虚拟机将不再出现在列表里（不会动虚拟机本身）。请输入 <b class="mono">${esc(h.host)}</b> 确认：</div>
+            <input type="text" data-confirm="${esc(h.id)}" autocomplete="off" placeholder="${esc(h.host)}">
+            <div class="remove-ops">
+              <button type="button" data-cancel-remove="1">取消</button>
+              <button type="button" class="danger" data-do-remove="${esc(h.id)}">确认移除</button>
+            </div>
+          </div>` : ""}
+        </div>`;
+    }).join("");
 }
 
 function render() {
@@ -806,9 +868,90 @@ $("vm-body").onclick = (e) => {
   renderTable();
 };
 
+function startEdit(id) {
+  const h = state.items.find((x) => x.id === id);
+  if (!h) return;
+  state.editing = id;
+  state.removing = null;
+  $("form-title").textContent = `编辑「${h.name}」`;
+  $("f-name").value = h.name;
+  $("f-host").value = h.host;
+  $("f-port").value = h.port;
+  $("f-user").value = h.user;
+  $("f-pass").value = "";
+  $("f-pass").placeholder = "留空不改密码";
+  $("btn-cancel-edit").hidden = false;
+  $("btn-save").textContent = "验证并保存";
+  $("form-hint").textContent = "密码留空即沿用原密码；改了地址或账号会先真连一次，连不上就不保存。";
+  renderPanel();
+  $("f-name").focus();
+}
+
+function stopEdit() {
+  state.editing = null;
+  $("form-add").reset();
+  $("f-port").value = "443";
+  $("f-user").value = "root";
+  $("f-pass").placeholder = "";
+  $("form-title").textContent = "接入一台 ESXi 主机";
+  $("btn-cancel-edit").hidden = true;
+  $("btn-save").textContent = "验证并保存";
+  $("form-hint").textContent = "密码用 Windows DPAPI 加密后存在本机 data/hosts.json，页面不会回显。";
+  renderPanel();
+}
+
+async function confirmRemove(id) {
+  const h = state.items.find((x) => x.id === id);
+  if (!h) return;
+  const input = document.querySelector(`[data-confirm="${CSS.escape(id)}"]`);
+  const typed = (input ? input.value : "").trim();
+  if (typed !== h.host) {
+    toast(`请原样输入 ${h.host} 以确认`, true);
+    if (input) input.focus();
+    return;
+  }
+  try {
+    const res = await fetch(`/api/hosts/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: typed }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "移除失败");
+    state.removing = null;
+    if (state.host === id) state.host = "";
+    if (state.editing === id) stopEdit();
+    toast(`已移除 ${h.name}`);
+    await refresh();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+$("btn-cancel-edit").onclick = stopEdit;
+
+$("host-list").onclick = (e) => {
+  const editBtn = e.target.closest("[data-edit]");
+  if (editBtn) { startEdit(editBtn.dataset.edit); return; }
+  const removeBtn = e.target.closest("[data-remove]");
+  if (removeBtn) {
+    state.removing = state.removing === removeBtn.dataset.remove ? null : removeBtn.dataset.remove;
+    renderPanel();
+    return;
+  }
+  if (e.target.closest("[data-cancel-remove]")) {
+    state.removing = null;
+    renderPanel();
+    return;
+  }
+  const doRemove = e.target.closest("[data-do-remove]");
+  if (doRemove) confirmRemove(doRemove.dataset.doRemove);
+};
+
 $("form-add").onsubmit = async (e) => {
   e.preventDefault();
   const save = $("btn-save");
+  const editing = state.editing;
   const body = {
     name: $("f-name").value.trim(),
     host: $("f-host").value.trim(),
@@ -816,21 +959,27 @@ $("form-add").onsubmit = async (e) => {
     user: $("f-user").value.trim(),
     password: $("f-pass").value,
   };
+  if (!editing && !body.password) {
+    toast("请填写登录密码", true);
+    return;
+  }
   save.disabled = true;
   save.textContent = "验证中…";
   try {
-    const res = await fetch("/api/hosts", {
-      method: "POST",
+    const url = editing ? `/api/hosts/${encodeURIComponent(editing)}` : "/api/hosts";
+    const res = await fetch(url, {
+      method: editing ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error?.message || "保存失败");
-    $("form-add").reset();
-    $("f-port").value = "443";
-    $("f-user").value = "root";
+    const label = editing ? `已更新 ${data.host.name}` : `已接入 ${data.host.name}（${data.info?.product || "ESXi"} ${data.info?.version || ""}）`;
+    stopEdit();
     openDrawer(false);
-    toast(`已接入 ${data.host.name}（${data.info.product || "ESXi"} ${data.info.version || ""}）`);
+    toast(data.fingerprint_changed
+      ? `${label}；注意：证书指纹变了，卡片上会提示`
+      : label);
     await refresh();
   } catch (err) {
     toast(err.message, true);
