@@ -14,6 +14,10 @@ venv/
 *.tmp
 *.bak
 
+# 本地验证产物：截图、探测脚本、服务日志、无头浏览器配置
+.scratch/*
+!.scratch/dashboard/
+
 # 编辑器与系统
 .vscode/
 .idea/

@@ -16,6 +16,7 @@
     --warn: #d98500;
     --bad: #d64545;
     --bar: #eef1f5;
+    --row-alt: #fafbfc;
     --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .04);
   }
   @media (prefers-color-scheme: dark) {
@@ -30,6 +31,7 @@
       --warn: #f0b644;
       --bad: #ff7b72;
       --bar: #2a2e35;
+      --row-alt: #23262c;
       --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .25);
     }
   }
@@ -59,9 +61,8 @@
     border: 1px solid var(--border); border-radius: 99px; padding: 2px 9px;
   }
   .stamp { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+  button, select, input { font: inherit; color: var(--text); }
   button {
-    font: inherit;
-    color: var(--text);
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -73,7 +74,7 @@
   button:disabled { opacity: .55; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { opacity: .9; }
-  main { padding: 20px; max-width: 1320px; margin: 0 auto; }
+  main { padding: 20px; max-width: 1560px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
   #cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
@@ -93,18 +94,20 @@
   .card-head { display: flex; align-items: flex-start; gap: 10px; }
   .card-title { font-size: 15px; font-weight: 640; }
   .card-sub { color: var(--muted); font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; }
-  .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    margin-top: 6px; flex: none; background: var(--muted);
-  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--muted); }
   .dot.ok { background: var(--ok); }
   .dot.bad { background: var(--bad); }
   .dot.warn { background: var(--warn); }
+  .dot.off { background: var(--muted); }
   .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
   .kv div { min-width: 0; }
   .kv dt { color: var(--muted); font-size: 12px; margin: 0; }
   .kv dd { margin: 1px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .kv dd .model { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+  .kv dd .model {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+    color: var(--muted); font-size: 11.5px; line-height: 1.35;
+  }
   .meter { margin-top: 2px; }
   .meter-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .meter-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -118,20 +121,89 @@
   .error-box {
     background: color-mix(in srgb, var(--bad) 12%, transparent);
     border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
-    color: var(--text);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 13px;
+    border-radius: 8px; padding: 10px 12px; font-size: 13px;
   }
   .error-box b { color: var(--bad); }
   .empty {
-    text-align: center;
-    padding: 64px 20px;
-    color: var(--muted);
-    border: 1px dashed var(--border);
-    border-radius: 12px;
+    text-align: center; padding: 64px 20px; color: var(--muted);
+    border: 1px dashed var(--border); border-radius: 12px;
   }
   .empty h2 { color: var(--text); font-size: 16px; margin: 0 0 6px; }
+
+  /* 虚拟机表 */
+  .table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .toolbar input[type="search"] {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 11px; width: min(300px, 46vw);
+  }
+  .toolbar select {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 9px; max-width: 220px;
+  }
+  .toolbar input:focus, .toolbar select:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px;
+  }
+  .count { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .table-scroll { max-height: min(60vh, 720px); overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel);
+    text-align: left; font-weight: 600; color: var(--muted); font-size: 12px;
+    padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; z-index: 1;
+  }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: var(--text); }
+  thead th .arrow { opacity: .35; margin-left: 3px; }
+  thead th.sorted .arrow { opacity: 1; color: var(--accent); }
+  tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr.row { cursor: pointer; }
+  tbody tr.row:hover { background: var(--row-alt); }
+  tbody tr.row.open { background: var(--row-alt); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.name { font-weight: 560; max-width: 260px; }
+  td.name .caret { color: var(--muted); margin-right: 5px; display: inline-block; transition: transform .15s; }
+  tr.open td.name .caret { transform: rotate(90deg); }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .muted { color: var(--muted); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    border-radius: 99px; padding: 1px 9px; font-size: 12px;
+    background: var(--bar); color: var(--text);
+  }
+  .pill.on { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .pill.off { background: var(--bar); color: var(--muted); }
+  .pill.sus { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  td.acts { white-space: nowrap; }
+  button.act {
+    font-size: 12px; line-height: 1; padding: 5px 9px; margin-right: 4px;
+    border-radius: 6px; border: 1px solid var(--line); background: transparent;
+    color: var(--fg); cursor: pointer;
+  }
+  button.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button.act:disabled { opacity: .35; cursor: not-allowed; }
+  button.act[data-act="shutdown"]:not(:disabled),
+  button.act[data-act="reboot"]:not(:disabled) { color: var(--warn); }
+  button.act[data-act="shutdown"]:hover:not(:disabled),
+  button.act[data-act="reboot"]:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+  tr.detail > td { background: var(--bg); padding: 0; border-bottom: 1px solid var(--border); }
+  .detail-body {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px 24px; padding: 14px 44px;
+  }
+  .detail-body dt { color: var(--muted); font-size: 11.5px; }
+  .detail-body dd { margin: 1px 0 0; overflow-wrap: anywhere; }
+  .no-rows { padding: 34px; text-align: center; color: var(--muted); }
+
   /* 设置抽屉 */
   .overlay {
     position: fixed; inset: 0; background: rgba(8, 10, 14, .42);
@@ -152,12 +224,14 @@
   }
   .drawer-body { padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
   label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
-  input {
-    width: 100%; font: inherit; color: var(--text);
-    background: var(--bg); border: 1px solid var(--border);
+  .drawer input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
     border-radius: 7px; padding: 8px 10px;
   }
-  input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+  .drawer input:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    outline-offset: -1px; border-color: var(--accent);
+  }
   .field { margin-bottom: 12px; }
   .row2 { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
   .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
@@ -167,7 +241,7 @@
     padding: 9px 11px; font-size: 13px; background: var(--bg);
   }
   .host-item .name { font-weight: 600; }
-  .host-item .mono { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .host-item .mono { color: var(--muted); }
   .toast {
     position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
     background: var(--panel); border: 1px solid var(--border);
@@ -177,7 +251,6 @@
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
   .toast.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
-  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
 </head>
 <body>
@@ -185,13 +258,41 @@
   <div class="brand">vm<span>_bord</span></div>
   <span class="origin" id="origin" title="实际监听地址"></span>
   <span class="stamp" id="stamp">正在读取…</span>
-  <button id="btn-refresh">刷新</button>
   <button id="btn-settings">设置</button>
 </header>
 
 <main>
   <div id="cards"></div>
-  <div id="empty" class="empty" hidden>
+
+  <section class="table-wrap" id="vm-section">
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="按名称或 IP 搜索" autocomplete="off">
+      <select id="host-filter"><option value="">全部主机</option></select>
+      <span class="count" id="count"></span>
+      <button id="btn-refresh" style="margin-left:auto">刷新</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-key="name">名称<span class="arrow">▲</span></th>
+            <th>主机</th>
+            <th>IP</th>
+            <th>操作系统</th>
+            <th class="sortable" data-key="power">电源<span class="arrow">▲</span></th>
+            <th class="sortable" data-key="mem_mb">内存<span class="arrow">▲</span></th>
+            <th class="sortable" data-key="disk_gb">磁盘<span class="arrow">▲</span></th>
+            <th>Tools</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="vm-body"></tbody>
+      </table>
+      <div class="no-rows" id="no-rows" hidden>没有匹配的虚拟机</div>
+    </div>
+  </section>
+
+  <div class="empty" id="empty" hidden>
     <h2>还没有接入任何 ESXi 主机</h2>
     <p>点右上角「设置」填地址和账号，保存时会先验证能不能连上。</p>
     <button class="primary" id="btn-empty-add">添加第一台主机</button>
@@ -245,10 +346,23 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const cards = $("cards"), empty = $("empty"), stamp = $("stamp");
+const cardsEl = $("cards"), stamp = $("stamp"), emptyEl = $("empty");
 const overlay = $("overlay"), drawer = $("drawer"), toastEl = $("toast");
 
-const state = { items: [], loading: false };
+const POWER_RANK = { poweredOn: 0, suspended: 1, poweredOff: 2, unknown: 3 };
+const POWER_TEXT = { poweredOn: "运行中", suspended: "已挂起", poweredOff: "已关机" };
+const BUSY_TEXT = { on: "开机中…", shutdown: "关机中…", reboot: "重启中…" };
+const TOOLS_TEXT = {
+  toolsOk: "已运行", toolsOld: "需升级", toolsNotRunning: "未运行", toolsNotInstalled: "未安装",
+};
+
+const state = {
+  items: [], vms: [], loading: false,
+  q: "", host: "",
+  sort: { key: "name", dir: 1 },
+  open: new Set(),
+  busy: {},
+};
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
@@ -260,14 +374,12 @@ function toast(message, bad = false) {
   toastEl.textContent = message;
   toastEl.classList.toggle("bad", bad);
   toastEl.classList.add("show");
-  clearTimeout(toast.dataset.timer);
-  toast.dataset.timer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => toastEl.classList.remove("show"), 3200);
 }
 
-function gb(n) {
-  if (n === null || n === undefined) return "—";
-  return n >= 1024 ? (n / 1024).toFixed(1) + " TB" : n + " GB";
-}
+const gb = (n) => (n === null || n === undefined ? "—" : n >= 1024 ? (n / 1024).toFixed(1) + " TB" : n + " GB");
+const mem = (n) => (n === null || n === undefined ? "—" : n >= 1024 ? (n / 1024).toFixed(1) + " GB" : n + " MB");
 
 function uptimeText(seconds) {
   if (!seconds) return "—";
@@ -278,7 +390,7 @@ function uptimeText(seconds) {
   return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分`;
 }
 
-function meter(label, used, total, pct) {
+function meter(label, used, pct) {
   const cls = pct === null ? "" : pct >= 90 ? "crit" : pct >= 70 ? "hot" : "";
   const width = pct === null ? 0 : Math.min(100, Math.max(2, pct));
   return `
@@ -292,8 +404,7 @@ function meter(label, used, total, pct) {
 
 function cardHtml(item) {
   const s = item.stats;
-  const broken = !s || item.error;
-  if (broken) {
+  if (!s || item.error) {
     const err = item.error || { kind: "unknown", message: "没有采集到数据" };
     return `
       <article class="card broken">
@@ -312,9 +423,7 @@ function cardHtml(item) {
   const dsTotal = s.datastores.reduce((sum, d) => sum + (d.capacity_gb || 0), 0);
   const dsFree = s.datastores.reduce((sum, d) => sum + (d.free_gb || 0), 0);
   const dsPct = dsTotal ? Math.round((dsTotal - dsFree) / dsTotal * 1000) / 10 : null;
-  const stateText = s.connection_state === "connected" ? "已连接" : (s.connection_state || "未知");
   const dotCls = s.connection_state === "connected" ? "ok" : "warn";
-  const link = `https://${item.host}/ui/`;
 
   return `
     <article class="card">
@@ -327,36 +436,124 @@ function cardHtml(item) {
       </div>
       <div class="kv">
         <div><dt>版本</dt><dd>ESXi ${esc(s.version || "—")} build ${esc(s.build || "—")}</dd></div>
-        <div><dt>状态</dt><dd>${esc(stateText)}</dd></div>
+        <div><dt>状态</dt><dd>${esc(s.connection_state === "connected" ? "已连接" : s.connection_state || "未知")}</dd></div>
         <div><dt>CPU</dt><dd>${esc(s.cpu_cores)} 核 · ${esc(s.cpu_mhz)} MHz
-          <span class="model" title="${esc(s.cpu_model)}">${esc(s.cpu_model || "")}</span></dd></div>
+          <span class="model">${esc(s.cpu_model || "")}</span></dd></div>
         <div><dt>运行时长</dt><dd>${esc(uptimeText(s.uptime_seconds))}</dd></div>
       </div>
-      ${meter("CPU 使用率", "", null, s.cpu_usage_pct)}
-      ${meter("内存", `${gb(Math.round(s.mem_used_mb / 1024 * 10) / 10)} / ${gb(Math.round(s.mem_total_mb / 1024 * 10) / 10)}`, null, s.mem_usage_pct)}
-      ${meter("数据存储", `${gb(Math.round((dsTotal - dsFree) * 10) / 10)} / ${gb(dsTotal)}`, null, dsPct)}
+      ${meter("CPU 使用率", "", s.cpu_usage_pct)}
+      ${meter("内存", `${mem(s.mem_used_mb)} / ${mem(s.mem_total_mb)}`, s.mem_usage_pct)}
+      ${meter("数据存储", `${gb(Math.round((dsTotal - dsFree) * 10) / 10)} / ${gb(dsTotal)}`, dsPct)}
       <div class="kv">
         <div><dt>虚拟机</dt><dd>${esc(s.vm_on)} 开机 / ${esc(s.vm_total)} 台</dd></div>
         <div><dt>数据存储</dt><dd>${esc(s.datastores.length)} 个</dd></div>
       </div>
       <div class="card-foot">
-        <a href="${esc(link)}" target="_blank" rel="noopener">打开 Host Client ↗</a>
-        <span class="card-sub" style="margin-left:auto" title="证书 SHA256 指纹">${esc((s.fingerprint || "").slice(0, 17))}…</span>
+        <a href="https://${esc(item.host)}/ui/" target="_blank" rel="noopener">打开 Host Client ↗</a>
+        <span class="card-sub" style="margin-left:auto" title="证书 SHA256 指纹：${esc(s.fingerprint || "")}">${esc((s.fingerprint || "").slice(0, 17))}…</span>
       </div>
     </article>`;
 }
 
-function render() {
-  const items = state.items;
-  empty.hidden = items.length > 0 || state.loading;
-  cards.innerHTML = items.map(cardHtml).join("");
-  $("host-list").innerHTML = items.length === 0
+function visibleVms() {
+  const q = state.q.trim().toLowerCase();
+  let rows = state.vms;
+  if (state.host) rows = rows.filter((v) => v.host_id === state.host);
+  if (q) {
+    rows = rows.filter((v) =>
+      (v.name || "").toLowerCase().includes(q) || (v.ip || "").toLowerCase().includes(q));
+  }
+  const { key, dir } = state.sort;
+  const cmp = (a, b) => {
+    let x = a[key], y = b[key];
+    if (key === "power") { x = POWER_RANK[a.power] ?? 9; y = POWER_RANK[b.power] ?? 9; }
+    if (key === "name") { x = (x || "").toLowerCase(); y = (y || "").toLowerCase(); }
+    if (x === y) return (a.name || "").localeCompare(b.name || "");
+    if (x === null || x === undefined) return 1;
+    if (y === null || y === undefined) return -1;
+    return x < y ? -1 : 1;
+  };
+  return rows.slice().sort((a, b) => cmp(a, b) * dir);
+}
+
+function vmKey(vm) { return vm.host_id + "::" + (vm.moref || vm.name); }
+
+function rowHtml(vm) {
+  const key = vmKey(vm);
+  const open = state.open.has(key);
+  const powerCls = vm.power === "poweredOn" ? "on" : vm.power === "suspended" ? "sus" : "off";
+  const memCell = vm.mem_mb == null ? "—"
+    : `${mem(vm.mem_mb)}${vm.mem_used_mb != null ? ` <span class="muted">(${mem(vm.mem_used_mb)} 实时)</span>` : ""}`;
+  const tools = vm.tools ? (TOOLS_TEXT[vm.tools] || vm.tools) : "—";
+  const busy = state.busy[key];
+  const toolsRunning = vm.tools_running === "guestToolsRunning";
+  const canOn = !busy && vm.power !== "poweredOn";
+  const canGraceful = !busy && vm.power === "poweredOn" && toolsRunning;
+  const guard = vm.power !== "poweredOn"
+    ? "虚拟机没有在运行"
+    : "客户机 VMware Tools 没在运行，只能用强制断电";
+  const acts = busy
+    ? `<button class="act" disabled>${esc(BUSY_TEXT[busy] || "处理中…")}</button>`
+    : `<button class="act" data-act="on"${canOn ? "" : " disabled"} title="${esc(canOn ? "开机" : "已经是开机状态")}">开机</button>
+       <button class="act" data-act="shutdown"${canGraceful ? "" : " disabled"} title="${esc(canGraceful ? "走客户机自身的关机流程" : guard)}">关机</button>
+       <button class="act" data-act="reboot"${canGraceful ? "" : " disabled"} title="${esc(canGraceful ? "走客户机自身的重启流程" : guard)}">重启</button>`;
+  const detail = open ? `
+    <tr class="detail"><td colspan="9"><dl class="detail-body">
+      <div><dt>CPU</dt><dd>${esc(vm.num_cpu ?? "—")} 核</dd></div>
+      <div><dt>内存</dt><dd>${esc(mem(vm.mem_mb))}</dd></div>
+      <div><dt>磁盘合计</dt><dd>${esc(gb(vm.disk_gb))}</dd></div>
+      <div><dt>Tools</dt><dd>${esc(tools)}${vm.tools_running ? ` · ${esc(vm.tools_running)}` : ""}</dd></div>
+      <div><dt>IP</dt><dd class="mono">${esc(vm.ip || "未获取")}</dd></div>
+      <div><dt>开机时间</dt><dd>${esc(vm.boot_time || "—")}</dd></div>
+      <div><dt>UUID</dt><dd class="mono">${esc(vm.uuid || "—")}</dd></div>
+      <div><dt>VMX 路径</dt><dd class="mono">${esc(vm.vmx || "—")}</dd></div>
+    </dl></td></tr>` : "";
+  return `
+    <tr class="row ${open ? "open" : ""}" data-key="${esc(key)}">
+      <td class="name"><span class="caret">▶</span>${esc(vm.name)}</td>
+      <td class="muted">${esc(vm.host_name)}</td>
+      <td class="mono">${esc(vm.ip || "—")}</td>
+      <td title="${esc(vm.os_id || "")}">${esc(vm.os || "—")}</td>
+      <td><span class="pill ${powerCls}">${esc(POWER_TEXT[vm.power] || vm.power)}</span></td>
+      <td class="num">${memCell}</td>
+      <td class="num">${esc(gb(vm.disk_gb))}</td>
+      <td class="muted">${esc(tools)}</td>
+      <td class="acts">${acts}</td>
+    </tr>${detail}`;
+}
+
+function renderTable() {
+  const rows = visibleVms();
+  $("vm-body").innerHTML = rows.map(rowHtml).join("");
+  $("no-rows").hidden = rows.length > 0;
+  $("count").textContent = `${rows.length} / ${state.vms.length} 台`;
+  document.querySelectorAll("thead th.sortable").forEach((th) => {
+    const active = th.dataset.key === state.sort.key;
+    th.classList.toggle("sorted", active);
+    th.querySelector(".arrow").textContent = active ? (state.sort.dir > 0 ? "▲" : "▼") : "▲";
+  });
+}
+
+function renderPanel() {
+  const opts = [`<option value="">全部主机</option>`]
+    .concat(state.items.map((h) => `<option value="${esc(h.id)}">${esc(h.name)}（${h.stats ? h.stats.vm_total : "?"} 台）</option>`));
+  $("host-filter").innerHTML = opts.join("");
+  $("host-filter").value = state.host;
+  $("host-list").innerHTML = state.items.length === 0
     ? `<div class="host-item mono">还没有接入主机</div>`
-    : items.map((i) => `
+    : state.items.map((h) => `
         <div class="host-item">
-          <div class="name">${esc(i.name)}</div>
-          <div class="mono">${esc(i.host)}:${esc(i.port)} · ${esc(i.user)}</div>
+          <div class="name">${esc(h.name)}</div>
+          <div class="mono">${esc(h.host)}:${esc(h.port)} · ${esc(h.user)}</div>
         </div>`).join("");
+}
+
+function render() {
+  emptyEl.hidden = state.items.length > 0;
+  $("vm-section").hidden = state.items.length === 0;
+  cardsEl.innerHTML = state.items.map(cardHtml).join("");
+  renderPanel();
+  renderTable();
 }
 
 async function refresh() {
@@ -370,9 +567,12 @@ async function refresh() {
     const data = await res.json();
     if (!data.ok) throw new Error(data.error?.message || "读取失败");
     state.items = data.items || [];
-    state.loading = false;
+    state.vms = data.vms || [];
+    const known = new Set(state.items.map((h) => h.id));
+    if (state.host && !known.has(state.host)) state.host = "";
     render();
-    stamp.textContent = "最后更新于 " + (data.generated_at || "").replace("T", " ");
+    stamp.textContent = "最后更新于 " + (data.generated_at || "").replace("T", " ")
+      + (data.cached ? "（10 秒内缓存）" : "");
   } catch (err) {
     stamp.textContent = "读取失败";
     toast("读取失败：" + err.message, true);
@@ -390,12 +590,85 @@ function openDrawer(open) {
 }
 
 $("btn-refresh").onclick = refresh;
-$("origin").textContent = location.host;
 $("btn-settings").onclick = () => openDrawer(true);
 $("btn-empty-add").onclick = () => openDrawer(true);
 $("btn-close").onclick = () => openDrawer(false);
 overlay.onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") openDrawer(false); });
+$("origin").textContent = location.host;
+
+$("q").oninput = (e) => { state.q = e.target.value; renderTable(); };
+$("host-filter").onchange = (e) => { state.host = e.target.value; renderTable(); };
+
+document.querySelectorAll("thead th.sortable").forEach((th) => {
+  th.onclick = () => {
+    const key = th.dataset.key;
+    if (state.sort.key === key) state.sort.dir *= -1;
+    else state.sort = { key, dir: 1 };
+    renderTable();
+  };
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function pollTask(id) {
+  const deadline = Date.now() + 6 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    const res = await fetch("/api/tasks/" + encodeURIComponent(id));
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "任务状态读不到");
+    if (data.task.state !== "running") return data.task;
+  }
+  throw new Error("等太久还没结果，请点刷新确认");
+}
+
+async function runPower(vm, action) {
+  const key = vmKey(vm);
+  if (state.busy[key]) return;
+  state.busy[key] = action;
+  renderTable();
+  try {
+    const res = await fetch("/api/vms/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host_id: vm.host_id, moref: vm.moref, action }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "提交失败");
+    const task = await pollTask(data.task.id);
+    if (task.state === "error") throw new Error(task.error?.message || task.message);
+    // 只把这一行会变的字段就地更新，不重新采集三台主机。
+    Object.assign(vm, task.vm || {});
+    const host = state.items.find((h) => h.id === vm.host_id);
+    if (host && host.stats) {
+      host.stats.vm_on = state.vms.filter((v) => v.host_id === vm.host_id && v.power === "poweredOn").length;
+      cardsEl.innerHTML = state.items.map(cardHtml).join("");
+    }
+    toast(`${vm.name}：${task.label || "操作"}完成`);
+  } catch (err) {
+    toast(`${vm.name}：${err.message}`, true);
+  } finally {
+    delete state.busy[key];
+    renderTable();
+  }
+}
+
+$("vm-body").onclick = (e) => {
+  const actBtn = e.target.closest("button.act");
+  if (actBtn) {
+    const row = actBtn.closest("tr.row");
+    const key = row && row.dataset.key;
+    const vm = key && state.vms.find((v) => vmKey(v) === key);
+    if (vm && actBtn.dataset.act) runPower(vm, actBtn.dataset.act);
+    return;
+  }
+  const tr = e.target.closest("tr.row");
+  if (!tr) return;
+  const key = tr.dataset.key;
+  if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
+  renderTable();
+};
 
 $("form-add").onsubmit = async (e) => {
   e.preventDefault();

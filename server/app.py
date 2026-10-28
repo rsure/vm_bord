@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -22,7 +24,14 @@ import store
 PORT_BASE = 8787
 PORT_SPAN = 12
 WEB_DIR = store.ROOT / "web"
-VERSION = "0.1.0"
+VERSION = "0.3.0"
+
+# 采集一台主机的墙钟上限：ESXi 卡住时不能把整个页面拖死。
+COLLECT_TIMEOUT = 10.0
+# 10 秒内重复刷新直接回缓存，避免连点把三台主机刷爆。
+CACHE_TTL = 10.0
+_cache = {"data": None, "ts": 0.0}
+_cache_lock = threading.Lock()
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -52,7 +61,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except OSError:
+                self.close_connection = True
 
     def _json(self, status: int, obj):
         self._send(status, _json_bytes(obj), "application/json; charset=utf-8")
@@ -61,7 +73,13 @@ class Handler(BaseHTTPRequestHandler):
         self._json(status, {"ok": False, "error": {"kind": kind, "message": message}})
 
     def log_message(self, fmt, *args):  # noqa: A003 - 覆盖基类
-        sys.stderr.write("%s  %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
+        # 控制台可能已经没了（被宿主回收、管道关闭）。写日志失败绝不能连累响应：
+        # send_response 内部就会调到这里，一旦抛出，客户端只会看到连接被重置。
+        try:
+            sys.stderr.write("%s  %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
+            sys.stderr.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
 
     # ---- 路由 -----------------------------------------------------------
     def do_HEAD(self):  # noqa: N802
@@ -88,6 +106,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._inventory()
             if method == "POST" and path == "/api/hosts":
                 return self._add_host()
+            if method == "POST" and path == "/api/vms/power":
+                return self._power()
+            if method == "GET" and path.startswith("/api/tasks/"):
+                return self._task(path[len("/api/tasks/"):])
             return self._fail(404, "not_found", f"没有这个接口：{path}")
         except BrokenPipeError:
             pass
@@ -113,34 +135,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API ------------------------------------------------------------
     def _inventory(self):
-        entries = []
-        for public in store.list_hosts():
-            full = store.get_host(public["id"], with_secret=True)
-            if not full:
-                continue
-            item = dict(public)
-            item["stats"] = None
-            item["error"] = None
-            try:
-                item["_password"] = store.secret_of(full)
-                item["_cfg"] = full
-            except OSError as exc:
-                item["error"] = {"kind": "secret", "message": f"密码解密失败：{exc}"}
-            entries.append(item)
+        now = time.time()
+        with _cache_lock:
+            cached = _cache["data"]
+            age = now - _cache["ts"]
+        if cached is not None and age < CACHE_TTL:
+            return self._json(200, {**cached, "cached": True, "cache_age": round(age, 1)})
 
-        todo = [e for e in entries if e.get("_cfg")]
-        if todo:
-            with ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
-                list(pool.map(_collect_one, todo))
-
-        for item in entries:
-            item.pop("_cfg", None)
-            item.pop("_password", None)
-        self._json(200, {
-            "ok": True,
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "items": entries,
-        })
+        data = _build_inventory()
+        with _cache_lock:
+            _cache["data"] = data
+            _cache["ts"] = time.time()
+        self._json(200, {**data, "cached": False, "cache_age": 0})
 
     def _add_host(self):
         try:
@@ -184,15 +190,174 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(201, {"ok": True, "host": entry, "info": info})
 
+    def _power(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            return self._fail(400, "bad_json", "请求体不是合法 JSON")
+        if not isinstance(payload, dict):
+            return self._fail(400, "bad_json", "请求体必须是对象")
+
+        host_id = str(payload.get("host_id") or "").strip()
+        moref = str(payload.get("moref") or "").strip()
+        action = str(payload.get("action") or "").strip()
+
+        if action not in esxi.POWER_LABEL:
+            return self._fail(400, "bad_action", f"不认识的操作：{action or '（空）'}")
+        if not host_id or not moref:
+            return self._fail(400, "bad_request", "缺少 host_id 或 moref")
+
+        entry = store.get_host(host_id, with_secret=True)
+        if not entry:
+            return self._fail(404, "not_found", "这台主机已经不在清单里了")
+        try:
+            password = store.secret_of(entry)
+        except OSError as exc:
+            return self._fail(500, "secret", f"密码解密失败：{exc}")
+
+        task = _new_task(host_id, moref, action)
+        threading.Thread(
+            target=_run_power,
+            args=(task["id"], entry, password, moref, action),
+            daemon=True,
+        ).start()
+        self._json(202, {"ok": True, "task": dict(task)})
+
+    def _task(self, task_id: str):
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+        if not task:
+            return self._fail(404, "not_found", "任务不存在或已被清理")
+        self._json(200, {"ok": True, "task": dict(task)})
+
+
+# ---- 电源操作的任务表 ----------------------------------------------------
+
+_tasks: dict[str, dict] = {}
+_tasks_lock = threading.Lock()
+TASK_LIMIT = 50
+
+
+def _new_task(host_id: str, moref: str, action: str) -> dict:
+    task = {
+        "id": "t_" + secrets.token_hex(8),
+        "action": action,
+        "label": esxi.POWER_LABEL[action],
+        "host_id": host_id,
+        "moref": moref,
+        "state": "running",
+        "message": f"{esxi.POWER_LABEL[action]}中…",
+        "error": None,
+        "vm": None,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "finished_at": None,
+    }
+    with _tasks_lock:
+        _tasks[task["id"]] = task
+        while len(_tasks) > TASK_LIMIT:
+            del _tasks[next(iter(_tasks))]
+    return task
+
+
+def _invalidate_cache() -> None:
+    with _cache_lock:
+        _cache["data"] = None
+        _cache["ts"] = 0.0
+
+
+def _run_power(task_id: str, entry: dict, password: str, moref: str, action: str) -> None:
+    """在后台线程里跑完整条操作链，页面靠轮询任务状态看进展。"""
+    result, error = None, None
+    try:
+        result = esxi.power_op(entry, password, moref, action)
+    except esxi.EsxiError as exc:
+        error = {"kind": exc.kind, "message": exc.message}
+    except Exception as exc:  # noqa: BLE001
+        error = {"kind": "other", "message": str(exc)}
+
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+        if task is None:
+            return
+        task["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if error:
+            task["state"] = "error"
+            task["error"] = error
+            task["message"] = error["message"]
+        else:
+            task["state"] = "done"
+            task["vm"] = result["vm"]
+            task["message"] = f"{result['label']}完成"
+
+    _invalidate_cache()
+
 
 def _collect_one(item: dict) -> dict:
     try:
-        item["stats"] = esxi.collect_host(item["_cfg"], item["_password"])
+        item["stats"] = esxi.collect_host(item["_cfg"], item["_password"], include_vms=True)
     except esxi.EsxiError as exc:
         item["error"] = {"kind": exc.kind, "message": exc.message}
     except Exception as exc:  # noqa: BLE001
         item["error"] = {"kind": "other", "message": str(exc)}
     return item
+
+
+def _build_inventory() -> dict:
+    entries = []
+    for public in store.list_hosts():
+        full = store.get_host(public["id"], with_secret=True)
+        if not full:
+            continue
+        item = dict(public)
+        item["stats"] = None
+        item["error"] = None
+        try:
+            item["_password"] = store.secret_of(full)
+            item["_cfg"] = full
+        except OSError as exc:
+            item["error"] = {"kind": "secret", "message": f"密码解密失败：{exc}"}
+        entries.append(item)
+
+    todo = [e for e in entries if e.get("_cfg")]
+    if todo:
+        pool = ThreadPoolExecutor(max_workers=min(8, len(todo)))
+        futures = {pool.submit(_collect_one, entry): entry for entry in todo}
+        deadline = time.time() + COLLECT_TIMEOUT
+        for future in futures:
+            entry = futures[future]
+            remaining = deadline - time.time()
+            try:
+                future.result(timeout=max(0.05, remaining))
+            except FuturesTimeout:
+                entry["error"] = {
+                    "kind": "timeout",
+                    "message": f"采集超时（{int(COLLECT_TIMEOUT)} 秒没回来）",
+                }
+            except Exception as exc:  # noqa: BLE001
+                entry["error"] = {"kind": "other", "message": str(exc)}
+        pool.shutdown(wait=False)
+
+    vms = []
+    for item in entries:
+        stats = item.get("stats") or {}
+        for vm in stats.pop("vms", None) or []:
+            vms.append({
+                **vm,
+                "host_id": item["id"],
+                "host_name": item["name"],
+                "host_addr": item["host"],
+            })
+        item.pop("_cfg", None)
+        item.pop("_password", None)
+    vms.sort(key=lambda row: (row.get("name") or "").lower())
+
+    return {
+        "ok": True,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "items": entries,
+        "vms": vms,
+    }
 
 
 class LocalServer(ThreadingHTTPServer):
