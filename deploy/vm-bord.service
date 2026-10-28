@@ -1,0 +1,24 @@
+[Unit]
+Description=vm_bord 虚拟机看板（ESXi 主机与虚拟机管理）
+Documentation=https://github.com/rsure/vm_bord
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/hk/tools/vmbord
+# 账号密码放这里（安装脚本会写成 0600），不要写进本文件
+EnvironmentFile=-/etc/vm-bord.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/usr/local/hk/tools/vmbord/venv/bin/python -u server/app.py --host 0.0.0.0 --port 8787
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+# 只需要读写自己的 data 目录
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

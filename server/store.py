@@ -1,76 +1,91 @@
 """主机清单的持久化。
 
-密码不以明文落盘：用 Windows DPAPI 加密成密文，只有同一台机器的同一个
-Windows 用户能解开。清单存在 data/hosts.json，对外一律不返回密码。
+密码不以明文落盘，加密方式按平台二选一：
+
+- Windows：DPAPI（CryptProtectData），只有同一台机器的同一个 Windows 用户能解。
+- 其它平台：本机密钥文件 ``data/secret.key``（0600）+ Fernet(AES-128-CBC+HMAC)，
+  密文带 ``fernet:v1:`` 前缀，方便和 Windows 的旧密文区分开。
+
+清单存在 data/hosts.json，对外一律不返回密码。
 """
 
 from __future__ import annotations
 
 import base64
-import ctypes
 import json
 import os
 import secrets
+import sys
 import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
+
+IS_WINDOWS = sys.platform.startswith("win")
+
+if IS_WINDOWS:  # Linux 上 ctypes.wintypes 根本不存在
+    import ctypes
+    from ctypes import wintypes
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 HOSTS_FILE = DATA_DIR / "hosts.json"
 AUDIT_FILE = DATA_DIR / "audit.jsonl"
+KEY_FILE = DATA_DIR / "secret.key"
 
 _LOCK = threading.Lock()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
+FERNET_PREFIX = "fernet:v1:"
+
+_key_lock = threading.Lock()
+_fernet_cache = {"obj": None}
 
 
-class _BLOB(ctypes.Structure):
-    _fields_ = [
-        ("cbData", wintypes.DWORD),
-        ("pbData", ctypes.POINTER(ctypes.c_char)),
-    ]
+if IS_WINDOWS:
 
-
-def _win_dlls():
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    for fn in (crypt32.CryptProtectData, crypt32.CryptUnprotectData):
-        fn.restype = wintypes.BOOL
-        fn.argtypes = [
-            ctypes.POINTER(_BLOB),
-            wintypes.LPCWSTR,
-            ctypes.POINTER(_BLOB),
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            ctypes.POINTER(_BLOB),
+    class _BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_char)),
         ]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    return crypt32, kernel32
 
+    def _win_dlls():
+        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        for fn in (crypt32.CryptProtectData, crypt32.CryptUnprotectData):
+            fn.restype = wintypes.BOOL
+            fn.argtypes = [
+                ctypes.POINTER(_BLOB),
+                wintypes.LPCWSTR,
+                ctypes.POINTER(_BLOB),
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(_BLOB),
+            ]
+        kernel32.LocalFree.restype = ctypes.c_void_p
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        return crypt32, kernel32
 
-_CRYPT32, _KERNEL32 = _win_dlls()
+    _CRYPT32, _KERNEL32 = _win_dlls()
 
+    def _blob(raw: bytes):
+        """造一个指向 raw 的 DATA_BLOB；返回的 buffer 必须一直被引用住。"""
+        buf = ctypes.create_string_buffer(raw, len(raw))
+        blob = _BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        return blob, buf
 
-def _blob(raw: bytes):
-    """造一个指向 raw 的 DATA_BLOB；返回的 buffer 必须一直被引用住。"""
-    buf = ctypes.create_string_buffer(raw, len(raw))
-    blob = _BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
-    return blob, buf
-
-
-def _take(blob: _BLOB) -> bytes:
-    try:
-        return ctypes.string_at(blob.pbData, blob.cbData)
-    finally:
-        _KERNEL32.LocalFree(ctypes.cast(blob.pbData, ctypes.c_void_p))
+    def _take(blob: _BLOB) -> bytes:
+        try:
+            return ctypes.string_at(blob.pbData, blob.cbData)
+        finally:
+            _KERNEL32.LocalFree(ctypes.cast(blob.pbData, ctypes.c_void_p))
 
 
 def dpapi_encrypt(text: str) -> str:
     if not text:
         return ""
+    if not IS_WINDOWS:
+        raise OSError("当前系统不支持 DPAPI")
     src, _keep = _blob(text.encode("utf-8"))
     out = _BLOB()
     ok = _CRYPT32.CryptProtectData(
@@ -85,6 +100,8 @@ def dpapi_encrypt(text: str) -> str:
 def dpapi_decrypt(payload: str) -> str:
     if not payload:
         return ""
+    if not IS_WINDOWS:
+        raise OSError("当前系统不支持 DPAPI")
     src, _keep = _blob(base64.b64decode(payload))
     out = _BLOB()
     ok = _CRYPT32.CryptUnprotectData(
@@ -94,6 +111,58 @@ def dpapi_decrypt(payload: str) -> str:
     if not ok:
         raise OSError(f"CryptUnprotectData 失败（错误码 {ctypes.get_last_error()}）")
     return _take(out).decode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# 本机密钥（会话签名用；非 Windows 还给 Fernet 加密密码用）
+# --------------------------------------------------------------------------
+
+def machine_key() -> bytes:
+    """读或创建 data/secret.key，权限收到 0600。
+
+    这个文件就是本机的信任根：拿到它就能解开密码、伪造登录态，
+    所以它绝不能进版本库（.gitignore 已排除 data/）。
+    """
+    with _key_lock:
+        ensure_data_dir()
+        if KEY_FILE.exists():
+            raw = KEY_FILE.read_bytes().strip()
+            if raw:
+                return raw
+        raw = base64.urlsafe_b64encode(secrets.token_bytes(32))
+        KEY_FILE.write_bytes(raw + b"\n")
+        try:
+            os.chmod(KEY_FILE, 0o600)
+        except OSError:
+            pass
+        return raw
+
+
+def _fernet():
+    if _fernet_cache["obj"] is None:
+        from cryptography.fernet import Fernet  # 只有非 Windows 才需要
+        with _key_lock:
+            _fernet_cache["obj"] = Fernet(machine_key())
+    return _fernet_cache["obj"]
+
+
+def encrypt_secret(text: str) -> str:
+    """密码入库前的加密。Windows 走 DPAPI，其它平台走本机密钥 + Fernet。"""
+    if not text:
+        return ""
+    if IS_WINDOWS:
+        return dpapi_encrypt(text)
+    return FERNET_PREFIX + _fernet().encrypt(text.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(payload: str) -> str:
+    if not payload:
+        return ""
+    if payload.startswith(FERNET_PREFIX):
+        return _fernet().decrypt(payload[len(FERNET_PREFIX):].encode("ascii")).decode("utf-8")
+    if IS_WINDOWS:
+        return dpapi_decrypt(payload)
+    raise OSError("这份密文不是本机加密的（缺少 fernet 前缀），请重新录入密码")
 
 
 # --------------------------------------------------------------------------
@@ -201,7 +270,7 @@ def add_host(payload: dict, fingerprint: str | None) -> dict:
             "host": payload["host"],
             "port": int(payload["port"]),
             "user": payload["user"],
-            "password": dpapi_encrypt(payload.get("password") or ""),
+            "password": encrypt_secret(payload.get("password") or ""),
             "fingerprint": fingerprint,
             "added_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
@@ -225,7 +294,7 @@ def update_host(host_id: str, payload: dict, fingerprint: str | None = None) -> 
             if payload.get("user"):
                 entry["user"] = payload["user"]
             if payload.get("password"):
-                entry["password"] = dpapi_encrypt(payload["password"])
+                entry["password"] = encrypt_secret(payload["password"])
             if fingerprint:
                 entry["fingerprint"] = fingerprint
             _write(doc)
@@ -246,4 +315,4 @@ def delete_host(host_id: str) -> bool:
 
 def secret_of(entry: dict) -> str:
     """把加密的密码解出来，只在真正去连主机的那一刻调用。"""
-    return dpapi_decrypt(entry.get("password") or "")
+    return decrypt_secret(entry.get("password") or "")

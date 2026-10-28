@@ -47,6 +47,31 @@ start.bat            # 或 python server\app.py --open
 
 也可以直接双击桌面快捷方式 `vm_bord 虚拟机看板.lnk`。
 
+## 部署到 Linux 服务器（CentOS 7 验证）
+
+服务器上同一份代码，用 `--host 0.0.0.0` 对外监听，并**必须**加 `--auth` 开登录：
+
+```bash
+sudo mkdir -p /usr/local/hk/tools/vmbord
+# 把仓库内容放到上面这个目录后：
+sudo VMBORD_AUTH='admin:admin@123' bash deploy/install.sh 8787
+```
+
+`deploy/install.sh` 会依次做：检查/安装 `python3`、建 `venv`、装依赖、把口令写进 `/etc/vm-bord.env`（0600）、
+安装 `vm-bord.service` 并 `enable --now`、最后做一次健康检查。之后：
+
+```bash
+systemctl status vm-bord      # 状态
+journalctl -u vm-bord -f      # 日志
+systemctl restart vm-bord     # 重启（改代码后）
+```
+
+CentOS 7 官方源只有 Python 3.6.8，所以脚本在 3.6 上会固定装 `pyvmomi==8.0.1.0` + `cryptography==36.0.2`；
+更新的 Python 会按 `requirements.txt` 装最新版。
+
+Linux 上密码不再用 DPAPI（Windows 专有），改成 `data/secret.key`（0600）+ Fernet；
+`hosts.json` 里老 Windows 密文解不开是正常的，**服务器上需要重新录一次 ESXi 密码**。
+
 ## 实测数据（2026-10-28，三台真机）
 
 | 动作 | 实测 |
@@ -64,7 +89,10 @@ start.bat            # 或 python server\app.py --open
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 服务版本与实际端口 |
+| GET | `/api/health` | 服务版本、实际端口、是否开了登录（**不需要登录**） |
+| GET | `/login` | 登录页（不需要登录） |
+| POST | `/api/login` | 登录，成功发 `vmbord_sid` 签名 cookie（12 小时） |
+| POST | `/api/logout` | 退出并清 cookie |
 | GET | `/api/hosts` | 已接入主机（不含密码） |
 | POST | `/api/hosts` | 接入主机（先 probe 再落盘） |
 | PUT | `/api/hosts/<id>` | 编辑主机（密码留空 = 不改） |
@@ -80,11 +108,14 @@ start.bat            # 或 python server\app.py --open
 ```
 vm_bord/
 ├── server/
-│   ├── app.py           HTTP 路由、并发采集、缓存、电源任务、CORS
+│   ├── app.py           HTTP 路由、并发采集、缓存、电源任务、CORS、登录鉴权
 │   ├── esxi.py          vSphere 访问层（连接、采集、电源操作）
-│   └── store.py         主机清单持久化 + DPAPI 加解密 + 审计
+│   └── store.py         主机清单持久化 + 密码加密（DPAPI / Fernet）+ 审计
 ├── web/
 │   └── index.html       看板页面（单文件、零构建、原生 JS）
+├── deploy/
+│   ├── install.sh       Linux 一键安装（依赖 + venv + systemd + 健康检查）
+│   └── vm-bord.service  systemd 单元模板
 ├── dsh-plugin/          DSH Desktop 侧栏启动器面板（宿主 + 浏览器两个半区）
 ├── tools/               冒烟与测量脚本
 ├── data/                运行时数据（不入库）
@@ -95,17 +126,18 @@ vm_bord/
 
 ## 环境
 
-- Windows（密码加密依赖 DPAPI）
-- Python 3.12
+- Windows：Python 3.10+，密码加密用系统 DPAPI
+- Linux / macOS：Python 3.6+，密码加密用 `data/secret.key` + Fernet（需 `cryptography`）
 - `pyvmomi`（唯一非标准库依赖）
 - 可选：DSH Desktop（要侧栏启动器按钮才需要）
 
 ## 安全
 
-- 只监听 `127.0.0.1`，不对外网开放。
+- 默认只监听 `127.0.0.1`；对外部署时用 `--host 0.0.0.0` 并务必配 `--auth 账号:密码`。
+- 开了登录后，除 `/login` 与 `/api/health` 外全都要求会话 cookie（HMAC 签名、12 小时、HttpOnly）；同一 IP 连续 5 次密码错误锁 60 秒。
 - 跨源请求只放行 `Origin` 为本机回环地址的，别的来源一律不给 CORS 头。
-- 密码进 DPAPI 之前不落任何文件；`hosts.json` 里只有密文。
-- `data/` 不进版本库。审计记录同样只在本机。
+- 密码只以密文存在 `hosts.json`，解密密钥留在本机（DPAPI 或 `data/secret.key`）。
+- `data/` 不进版本库；审计记录同样只在本机。
 
 ## 文档
 

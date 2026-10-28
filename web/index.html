@@ -336,6 +336,7 @@
   <span class="origin" id="origin" title="实际监听地址"></span>
   <span class="stamp" id="stamp">正在读取…</span>
   <button id="btn-settings">设置</button>
+  <button id="btn-logout" title="退出登录">退出</button>
 </header>
 
 <main>
@@ -470,6 +471,16 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
+}
+
+// 所有接口都过这里：会话过期（401）直接弹回登录页，不让页面停留在空数据上。
+async function apiFetch(url, opts) {
+  const res = await window.fetch(url, opts);
+  if (res.status === 401) {
+    location.href = "/login";
+    throw new Error("登录已过期，请重新登录");
+  }
+  return res;
 }
 
 function toast(message, bad = false) {
@@ -700,7 +711,7 @@ async function refresh() {
   btn.disabled = true;
   stamp.textContent = "正在读取…";
   try {
-    const res = await fetch("/api/inventory");
+    const res = await apiFetch("/api/inventory");
     const data = await res.json();
     if (!data.ok) throw new Error(data.error?.message || "读取失败");
     state.items = data.items || [];
@@ -728,6 +739,14 @@ function openDrawer(open) {
 
 $("btn-refresh").onclick = refresh;
 $("btn-settings").onclick = () => openDrawer(true);
+$("btn-logout").onclick = async () => {
+  try {
+    await apiFetch("/api/logout", { method: "POST" });
+  } catch (err) {
+    // 401 时 apiFetch 已经跳登录页了，这里不用再管
+  }
+  location.href = "/login";
+};
 $("btn-empty-add").onclick = () => openDrawer(true);
 $("btn-close").onclick = () => openDrawer(false);
 overlay.onclick = () => openDrawer(false);
@@ -752,7 +771,7 @@ async function pollTask(id) {
   const deadline = Date.now() + 6 * 60 * 1000;
   while (Date.now() < deadline) {
     await sleep(1500);
-    const res = await fetch("/api/tasks/" + encodeURIComponent(id));
+    const res = await apiFetch("/api/tasks/" + encodeURIComponent(id));
     const data = await res.json();
     if (!data.ok) throw new Error(data.error?.message || "任务状态读不到");
     if (data.task.state !== "running") return data.task;
@@ -767,7 +786,7 @@ async function runPower(vm, action, extra) {
   state.menu = null;
   renderTable();
   try {
-    const res = await fetch("/api/vms/power", {
+    const res = await apiFetch("/api/vms/power", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(Object.assign(
@@ -911,7 +930,7 @@ async function confirmRemove(id) {
     return;
   }
   try {
-    const res = await fetch(`/api/hosts/${encodeURIComponent(id)}/delete`, {
+    const res = await apiFetch(`/api/hosts/${encodeURIComponent(id)}/delete`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirm: typed }),
@@ -967,7 +986,7 @@ $("form-add").onsubmit = async (e) => {
   save.textContent = "验证中…";
   try {
     const url = editing ? `/api/hosts/${encodeURIComponent(editing)}` : "/api/hosts";
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method: editing ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

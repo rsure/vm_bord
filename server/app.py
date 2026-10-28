@@ -1,12 +1,18 @@
-﻿"""vm_bord 本地服务：标准库 HTTP 服务 + JSON API + 静态页面。
+"""vm_bord 本地服务：标准库 HTTP 服务 + JSON API + 静态页面。
 
-只监听 127.0.0.1，给本机浏览器用。端口默认 8787，被占用就往后顺延。
+默认监听 127.0.0.1 给本机浏览器用，端口默认 8787，被占用就往后顺延。
+部署到服务器时用 ``--host 0.0.0.0 --auth 账号:密码``：一旦开了账号，除了
+登录页和健康检查，所有页面和接口都要求先登录（会话用签名 cookie）。
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -25,7 +31,20 @@ import store
 PORT_BASE = 8787
 PORT_SPAN = 12
 WEB_DIR = store.ROOT / "web"
-VERSION = "0.6.0"
+VERSION = "0.7.0"
+
+# ---- 登录态 ---------------------------------------------------------------
+COOKIE_NAME = "vmbord_sid"
+SESSION_TTL = 12 * 3600  # 12 小时
+# 连续登录失败 5 次锁 60 秒，挡掉最朴素的暴力猜密码。
+FAIL_LIMIT = 5
+FAIL_WINDOW = 60.0
+
+_AUTH_USER = ""
+_AUTH_PASS = ""
+_AUTH_ON = False
+_FAILS: dict[str, list] = {}
+_FAILS_LOCK = threading.Lock()
 
 # 采集一台主机的墙钟上限：ESXi 卡住时不能把整个页面拖死。
 COLLECT_TIMEOUT = 10.0
@@ -56,6 +75,102 @@ _LOCAL_ORIGIN = re.compile(r"^http://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?
 _SERVER: "ThreadingHTTPServer | None" = None
 
 
+# ---- 会话签名 -------------------------------------------------------------
+def _sign(user: str, exp: int) -> str:
+    msg = f"{user}|{exp}".encode("utf-8")
+    return hmac.new(store.machine_key(), msg, hashlib.sha256).hexdigest()
+
+
+def _make_session(user: str) -> str:
+    exp = int(time.time()) + SESSION_TTL
+    raw = f"{user}|{exp}|{_sign(user, exp)}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _read_session(token: str) -> str | None:
+    """验签 + 看过期；通过就返回用户名，否则 None。"""
+    if not token:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        user, exp_s, sig = raw.split("|", 2)
+        exp = int(exp_s)
+    except (ValueError, TypeError, base64.binascii.Error):
+        return None
+    if exp < int(time.time()):
+        return None
+    if not hmac.compare_digest(sig, _sign(user, exp)):
+        return None
+    return user
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · vm_bord</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --fg:#1c2024;
+          --muted:#6b7280; --line:#e3e6ea; --accent:#2563eb; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --card:#1b1f23; --fg:#e6e8eb; --muted:#9aa3ad;
+            --line:#2b3138; --accent:#5b91f5; --bad:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center;
+         background:var(--bg); color:var(--fg);
+         font:14px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  form { width:min(340px,92vw); background:var(--card); border:1px solid var(--line);
+         border-radius:14px; padding:26px 24px; box-shadow:0 12px 32px rgb(0 0 0 / .08); }
+  h1 { margin:0 0 4px; font-size:18px; }
+  h1 span { color:var(--accent); }
+  p.sub { margin:0 0 20px; color:var(--muted); font-size:12.5px; }
+  label { display:block; margin-bottom:12px; }
+  label b { display:block; margin-bottom:5px; font-weight:600; font-size:12.5px; color:var(--muted); }
+  input { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
+          background:transparent; color:var(--fg); font:inherit; }
+  input:focus { outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color:var(--accent); }
+  button { width:100%; margin-top:6px; padding:10px 14px; border:0; border-radius:9px;
+           background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:default; }
+  .err { min-height:18px; margin-top:10px; color:var(--bad); font-size:12.5px; }
+</style></head>
+<body>
+<form id="f" autocomplete="on">
+  <h1>vm<span>_bord</span></h1>
+  <p class="sub">虚拟机看板 · 请先登录</p>
+  <label><b>账号</b><input id="u" name="username" autocomplete="username" required autofocus></label>
+  <label><b>密码</b><input id="p" name="password" type="password" autocomplete="current-password" required></label>
+  <button id="go" type="submit">登录</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+const f = document.getElementById("f");
+f.onsubmit = async (ev) => {
+  ev.preventDefault();
+  const go = document.getElementById("go");
+  const err = document.getElementById("err");
+  err.textContent = "";
+  go.disabled = true; go.textContent = "登录中…";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("u").value,
+                             password: document.getElementById("p").value }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "登录失败");
+    location.href = "/";
+  } catch (e) {
+    err.textContent = e.message;
+    go.disabled = false; go.textContent = "登录";
+  }
+};
+</script>
+</body></html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"vm_bord/{VERSION}"
     protocol_version = "HTTP/1.1"
@@ -75,12 +190,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
 
-    def _send(self, status: int, body: bytes, ctype: str, no_store: bool = True):
+    def _send(self, status: int, body: bytes, ctype: str, no_store: bool = True,
+              extra: list[tuple[str, str]] | None = None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         if no_store:
             self.send_header("Cache-Control", "no-store")
+        for key, value in extra or ():
+            self.send_header(key, value)
         self._cors()
         self.end_headers()
         if self.command != "HEAD":
@@ -104,6 +222,54 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, AttributeError):
             pass
 
+    # ---- 登录态 ---------------------------------------------------------
+    def _client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else "?"
+
+    def _locked(self) -> float:
+        """还剩多少秒不能再试密码（0 = 没有被锁）。"""
+        with _FAILS_LOCK:
+            rec = _FAILS.get(self._client_ip())
+        if not rec:
+            return 0.0
+        return max(0.0, rec.get("until", 0.0) - time.time())
+
+    def _note_fail(self) -> None:
+        ip, now = self._client_ip(), time.time()
+        with _FAILS_LOCK:
+            rec = _FAILS.setdefault(ip, {"count": 0, "first": now, "until": 0.0})
+            if now - rec["first"] > FAIL_WINDOW:
+                rec["count"], rec["first"] = 0, now
+            rec["count"] += 1
+            if rec["count"] >= FAIL_LIMIT:
+                rec["until"] = now + FAIL_WINDOW
+                rec["count"], rec["first"] = 0, now
+
+    def _clear_fail(self) -> None:
+        with _FAILS_LOCK:
+            _FAILS.pop(self._client_ip(), None)
+
+    def _cookie(self) -> str:
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == COOKIE_NAME:
+                return value
+        return ""
+
+    def _authed(self) -> bool:
+        if not _AUTH_ON:
+            return True
+        return _read_session(self._cookie()) == _AUTH_USER
+
+    def _redirect(self, location: str, extra=None):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        for key, value in extra or ():
+            self.send_header(key, value)
+        self._cors()
+        self.end_headers()
+
     # ---- 路由 -----------------------------------------------------------
     def do_HEAD(self):  # noqa: N802
         self._route("GET")
@@ -126,12 +292,26 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         path = unquote(urlparse(self.path).path)
         try:
+            if method == "GET" and path == "/login":
+                return self._login_page()
+            if method == "POST" and path == "/api/login":
+                return self._login()
+            # 健康检查不挡：部署脚本和 DSH 面板要能探活，它不泄露任何敏感信息。
+            if method == "GET" and path == "/api/health":
+                return self._json(200, {
+                    "ok": True, "version": VERSION,
+                    "port": self.server.server_port, "auth": _AUTH_ON,
+                })
+            if not self._authed():
+                if path.startswith("/api/"):
+                    return self._fail(401, "auth", "请先登录")
+                return self._redirect("/login")
+            if method == "POST" and path == "/api/logout":
+                return self._logout()
             if method == "GET" and path in ("/", "/index.html"):
                 return self._serve_file(WEB_DIR / "index.html")
             if method == "GET" and path.startswith("/static/"):
                 return self._serve_file(WEB_DIR / path[len("/static/"):], scoped=True)
-            if method == "GET" and path == "/api/health":
-                return self._json(200, {"ok": True, "version": VERSION, "port": self.server.server_port})
             if method == "GET" and path == "/api/hosts":
                 return self._json(200, {"ok": True, "hosts": store.list_hosts()})
             if method == "GET" and path == "/api/inventory":
@@ -159,6 +339,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._fail(500, "internal", f"服务内部错误：{exc}")
             except Exception:  # noqa: BLE001
                 pass
+
+    # ---- 登录 -----------------------------------------------------------
+    def _login_page(self):
+        self._send(200, LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _login(self):
+        if not _AUTH_ON:
+            return self._json(200, {"ok": True, "auth": False, "message": "本服务没有开启登录"})
+        wait = self._locked()
+        if wait > 0:
+            return self._fail(429, "locked", f"密码错误次数太多，请 {int(wait) + 1} 秒后再试")
+        try:
+            payload = self._body()
+        except ValueError as exc:
+            return self._fail(400, "bad_json", str(exc))
+        user = str(payload.get("username") or "")
+        password = str(payload.get("password") or "")
+        ok_user = hmac.compare_digest(user.encode("utf-8"), _AUTH_USER.encode("utf-8"))
+        ok_pass = hmac.compare_digest(password.encode("utf-8"), _AUTH_PASS.encode("utf-8"))
+        if not (ok_user and ok_pass):
+            self._note_fail()
+            self.log_message("登录失败：%s", self._client_ip())
+            return self._fail(401, "auth", "账号或密码不对")
+        self._clear_fail()
+        cookie = (f"{COOKIE_NAME}={_make_session(_AUTH_USER)}; Path=/; "
+                  f"Max-Age={SESSION_TTL}; HttpOnly; SameSite=Lax")
+        self._send(200, _json_bytes({"ok": True, "user": _AUTH_USER}),
+                   "application/json; charset=utf-8", extra=[("Set-Cookie", cookie)])
+        self.log_message("登录成功：%s", self._client_ip())
+
+    def _logout(self):
+        cookie = f"{COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+        self._send(200, _json_bytes({"ok": True}), "application/json; charset=utf-8",
+                   extra=[("Set-Cookie", cookie)])
 
     # ---- 静态文件 -------------------------------------------------------
     def _serve_file(self, target: Path, scoped: bool = False):
@@ -540,21 +754,37 @@ class LocalServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def _bind(port: int) -> tuple[LocalServer, int]:
+def _bind(host: str, port: int) -> tuple[LocalServer, int]:
     last_result = None
     for candidate in range(port, port + PORT_SPAN):
         try:
-            return LocalServer(("127.0.0.1", candidate), Handler), candidate
+            return LocalServer((host, candidate), Handler), candidate
         except OSError as exc:
             last_result = exc
-    raise SystemExit(f"127.0.0.1:{port}-{port + PORT_SPAN - 1} 都起不来：{last_result}")
+    raise SystemExit(f"{host}:{port}-{port + PORT_SPAN - 1} 都起不来：{last_result}")
+
+
+def _parse_auth(spec: str) -> tuple[str, str]:
+    user, sep, password = (spec or "").partition(":")
+    if not sep or not user or not password:
+        raise SystemExit("--auth 的格式是 账号:密码，例如 --auth admin:admin@123")
+    return user, password
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="vm_bord 本地虚拟机看板")
+    parser = argparse.ArgumentParser(description="vm_bord 虚拟机看板")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="监听地址，默认 127.0.0.1；部署到服务器用 0.0.0.0")
     parser.add_argument("--port", type=int, default=PORT_BASE, help=f"监听端口，默认 {PORT_BASE}")
+    parser.add_argument("--auth", default=os.environ.get("VMBORD_AUTH", ""), metavar="账号:密码",
+                        help="开启登录（也可以放环境变量 VMBORD_AUTH，不给就不校验，仅适合本机使用）")
     parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
     args = parser.parse_args(argv)
+
+    global _AUTH_USER, _AUTH_PASS, _AUTH_ON
+    if args.auth:
+        _AUTH_USER, _AUTH_PASS = _parse_auth(args.auth)
+        _AUTH_ON = True
 
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -562,16 +792,18 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError):
             pass
 
-    server, port = _bind(args.port)
+    server, port = _bind(args.host, args.port)
     global _SERVER
     _SERVER = server
-    url = f"http://127.0.0.1:{port}/"
+    shown = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+    url = f"http://{shown}:{port}/"
     print(f"vm_bord 已启动：{url}")
+    print(f"监听：{args.host}:{port}　登录：{'开启（账号 ' + _AUTH_USER + '）' if _AUTH_ON else '未开启'}")
     print(f"清单文件：{store.HOSTS_FILE}")
     print("按 Ctrl+C 停止。")
 
     if args.open:
-        threading.Timer(0.7, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.7, lambda: _open_browser(url)).start()
 
     try:
         server.serve_forever()
@@ -580,6 +812,16 @@ def main(argv=None) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _open_browser(url: str) -> None:
+    """有桌面才开浏览器；服务器上静默跳过。"""
+    try:
+        if webbrowser.open(url):
+            return
+    except Exception:  # noqa: BLE001 - 没有浏览器/没有 DISPLAY 都可能炸
+        pass
+    print(f"没找到浏览器，请手动打开：{url}")
 
 
 if __name__ == "__main__":
