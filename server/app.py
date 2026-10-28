@@ -108,6 +108,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · vm_bord</title>
+<link rel="icon" href="/static/favicon.ico" type="image/x-icon">
 <style>
   :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --fg:#1c2024;
           --muted:#6b7280; --line:#e3e6ea; --accent:#2563eb; --bad:#dc2626; }
