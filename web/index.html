@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vm_bord · 虚拟机看板</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e2e5ea;
+    --text: #1c2024;
+    --muted: #6b7280;
+    --accent: #2f6fed;
+    --ok: #17a673;
+    --warn: #d98500;
+    --bad: #d64545;
+    --bar: #eef1f5;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --panel: #1e2126;
+      --border: #2e3239;
+      --text: #e6e8eb;
+      --muted: #9aa3ad;
+      --accent: #6f9dff;
+      --ok: #3ddc97;
+      --warn: #f0b644;
+      --bad: #ff7b72;
+      --bar: #2a2e35;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .25);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+  .brand { font-size: 16px; font-weight: 650; letter-spacing: .2px; }
+  .brand span { color: var(--accent); }
+  .origin {
+    color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, Consolas, monospace;
+    border: 1px solid var(--border); border-radius: 99px; padding: 2px 9px;
+  }
+  .stamp { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 7px 13px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, opacity .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { opacity: .9; }
+  main { padding: 20px; max-width: 1320px; margin: 0 auto; }
+  #cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .card.broken { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+  .card-head { display: flex; align-items: flex-start; gap: 10px; }
+  .card-title { font-size: 15px; font-weight: 640; }
+  .card-sub { color: var(--muted); font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    margin-top: 6px; flex: none; background: var(--muted);
+  }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+  .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+  .kv div { min-width: 0; }
+  .kv dt { color: var(--muted); font-size: 12px; margin: 0; }
+  .kv dd { margin: 1px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .kv dd .model { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+  .meter { margin-top: 2px; }
+  .meter-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .meter-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .track { height: 6px; background: var(--bar); border-radius: 99px; overflow: hidden; }
+  .track i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+  .track i.hot { background: var(--warn); }
+  .track i.crit { background: var(--bad); }
+  .card-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
+  .card-foot a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  .card-foot a:hover { text-decoration: underline; }
+  .error-box {
+    background: color-mix(in srgb, var(--bad) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .error-box b { color: var(--bad); }
+  .empty {
+    text-align: center;
+    padding: 64px 20px;
+    color: var(--muted);
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+  }
+  .empty h2 { color: var(--text); font-size: 16px; margin: 0 0 6px; }
+  /* 设置抽屉 */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(8, 10, 14, .42);
+    opacity: 0; pointer-events: none; transition: opacity .18s; z-index: 20;
+  }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(430px, 92vw);
+    background: var(--panel); border-left: 1px solid var(--border);
+    transform: translateX(101%); transition: transform .2s ease;
+    z-index: 21; display: flex; flex-direction: column;
+    box-shadow: -12px 0 40px rgba(0, 0, 0, .15);
+  }
+  .drawer.open { transform: none; }
+  .drawer-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid var(--border);
+  }
+  .drawer-body { padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  input {
+    width: 100%; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 10px;
+  }
+  input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; border-color: var(--accent); }
+  .field { margin-bottom: 12px; }
+  .row2 { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .host-list { display: flex; flex-direction: column; gap: 8px; }
+  .host-item {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font-size: 13px; background: var(--bg);
+  }
+  .host-item .name { font-weight: 600; }
+  .host-item .mono { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
+    background: var(--panel); border: 1px solid var(--border);
+    box-shadow: var(--shadow); border-radius: 9px; padding: 10px 16px;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+    z-index: 30; max-width: 80vw; font-size: 13px;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">vm<span>_bord</span></div>
+  <span class="origin" id="origin" title="实际监听地址"></span>
+  <span class="stamp" id="stamp">正在读取…</span>
+  <button id="btn-refresh">刷新</button>
+  <button id="btn-settings">设置</button>
+</header>
+
+<main>
+  <div id="cards"></div>
+  <div id="empty" class="empty" hidden>
+    <h2>还没有接入任何 ESXi 主机</h2>
+    <p>点右上角「设置」填地址和账号，保存时会先验证能不能连上。</p>
+    <button class="primary" id="btn-empty-add">添加第一台主机</button>
+  </div>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <strong>设置</strong>
+    <button id="btn-close">关闭</button>
+  </div>
+  <div class="drawer-body">
+    <form id="form-add">
+      <div class="field">
+        <label for="f-name">显示名称（可留空，默认用地址）</label>
+        <input id="f-name" autocomplete="off" placeholder="比如 ESXi-152">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="f-host">主机地址</label>
+          <input id="f-host" required autocomplete="off" placeholder="192.168.2.152">
+        </div>
+        <div class="field">
+          <label for="f-port">端口</label>
+          <input id="f-port" value="443" inputmode="numeric">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="f-user">账号</label>
+          <input id="f-user" required autocomplete="off" value="root">
+        </div>
+        <div class="field">
+          <label for="f-pass">密码</label>
+          <input id="f-pass" type="password" required autocomplete="new-password">
+        </div>
+      </div>
+      <button class="primary" type="submit" id="btn-save">验证并保存</button>
+      <p class="hint">密码用 Windows DPAPI 加密后存在本机 data/hosts.json，页面不会回显。</p>
+    </form>
+
+    <div>
+      <label>已接入的主机</label>
+      <div class="host-list" id="host-list"></div>
+    </div>
+  </div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const cards = $("cards"), empty = $("empty"), stamp = $("stamp");
+const overlay = $("overlay"), drawer = $("drawer"), toastEl = $("toast");
+
+const state = { items: [], loading: false };
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function toast(message, bad = false) {
+  toastEl.textContent = message;
+  toastEl.classList.toggle("bad", bad);
+  toastEl.classList.add("show");
+  clearTimeout(toast.dataset.timer);
+  toast.dataset.timer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+}
+
+function gb(n) {
+  if (n === null || n === undefined) return "—";
+  return n >= 1024 ? (n / 1024).toFixed(1) + " TB" : n + " GB";
+}
+
+function uptimeText(seconds) {
+  if (!seconds) return "—";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  if (d > 0) return `${d} 天 ${h} 小时`;
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分`;
+}
+
+function meter(label, used, total, pct) {
+  const cls = pct === null ? "" : pct >= 90 ? "crit" : pct >= 70 ? "hot" : "";
+  const width = pct === null ? 0 : Math.min(100, Math.max(2, pct));
+  return `
+    <div class="meter">
+      <div class="meter-row"><span>${label}</span>
+        <b>${pct === null ? "—" : pct.toFixed(1) + "%"}${used ? " · " + used : ""}</b>
+      </div>
+      <div class="track"><i class="${cls}" style="width:${width}%"></i></div>
+    </div>`;
+}
+
+function cardHtml(item) {
+  const s = item.stats;
+  const broken = !s || item.error;
+  if (broken) {
+    const err = item.error || { kind: "unknown", message: "没有采集到数据" };
+    return `
+      <article class="card broken">
+        <div class="card-head">
+          <span class="dot bad"></span>
+          <div>
+            <div class="card-title">${esc(item.name)}</div>
+            <div class="card-sub">${esc(item.host)}:${esc(item.port)}</div>
+          </div>
+        </div>
+        <div class="error-box"><b>连不上</b>（${esc(err.kind)}）<br>${esc(err.message)}</div>
+        <div class="card-foot"><span class="card-sub">账号 ${esc(item.user)}</span></div>
+      </article>`;
+  }
+
+  const dsTotal = s.datastores.reduce((sum, d) => sum + (d.capacity_gb || 0), 0);
+  const dsFree = s.datastores.reduce((sum, d) => sum + (d.free_gb || 0), 0);
+  const dsPct = dsTotal ? Math.round((dsTotal - dsFree) / dsTotal * 1000) / 10 : null;
+  const stateText = s.connection_state === "connected" ? "已连接" : (s.connection_state || "未知");
+  const dotCls = s.connection_state === "connected" ? "ok" : "warn";
+  const link = `https://${item.host}/ui/`;
+
+  return `
+    <article class="card">
+      <div class="card-head">
+        <span class="dot ${dotCls}"></span>
+        <div>
+          <div class="card-title">${esc(item.name)}</div>
+          <div class="card-sub">${esc(item.host)}:${esc(item.port)} · ${esc(s.hostname || "")}</div>
+        </div>
+      </div>
+      <div class="kv">
+        <div><dt>版本</dt><dd>ESXi ${esc(s.version || "—")} build ${esc(s.build || "—")}</dd></div>
+        <div><dt>状态</dt><dd>${esc(stateText)}</dd></div>
+        <div><dt>CPU</dt><dd>${esc(s.cpu_cores)} 核 · ${esc(s.cpu_mhz)} MHz
+          <span class="model" title="${esc(s.cpu_model)}">${esc(s.cpu_model || "")}</span></dd></div>
+        <div><dt>运行时长</dt><dd>${esc(uptimeText(s.uptime_seconds))}</dd></div>
+      </div>
+      ${meter("CPU 使用率", "", null, s.cpu_usage_pct)}
+      ${meter("内存", `${gb(Math.round(s.mem_used_mb / 1024 * 10) / 10)} / ${gb(Math.round(s.mem_total_mb / 1024 * 10) / 10)}`, null, s.mem_usage_pct)}
+      ${meter("数据存储", `${gb(Math.round((dsTotal - dsFree) * 10) / 10)} / ${gb(dsTotal)}`, null, dsPct)}
+      <div class="kv">
+        <div><dt>虚拟机</dt><dd>${esc(s.vm_on)} 开机 / ${esc(s.vm_total)} 台</dd></div>
+        <div><dt>数据存储</dt><dd>${esc(s.datastores.length)} 个</dd></div>
+      </div>
+      <div class="card-foot">
+        <a href="${esc(link)}" target="_blank" rel="noopener">打开 Host Client ↗</a>
+        <span class="card-sub" style="margin-left:auto" title="证书 SHA256 指纹">${esc((s.fingerprint || "").slice(0, 17))}…</span>
+      </div>
+    </article>`;
+}
+
+function render() {
+  const items = state.items;
+  empty.hidden = items.length > 0 || state.loading;
+  cards.innerHTML = items.map(cardHtml).join("");
+  $("host-list").innerHTML = items.length === 0
+    ? `<div class="host-item mono">还没有接入主机</div>`
+    : items.map((i) => `
+        <div class="host-item">
+          <div class="name">${esc(i.name)}</div>
+          <div class="mono">${esc(i.host)}:${esc(i.port)} · ${esc(i.user)}</div>
+        </div>`).join("");
+}
+
+async function refresh() {
+  if (state.loading) return;
+  state.loading = true;
+  const btn = $("btn-refresh");
+  btn.disabled = true;
+  stamp.textContent = "正在读取…";
+  try {
+    const res = await fetch("/api/inventory");
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "读取失败");
+    state.items = data.items || [];
+    state.loading = false;
+    render();
+    stamp.textContent = "最后更新于 " + (data.generated_at || "").replace("T", " ");
+  } catch (err) {
+    stamp.textContent = "读取失败";
+    toast("读取失败：" + err.message, true);
+  } finally {
+    state.loading = false;
+    btn.disabled = false;
+  }
+}
+
+function openDrawer(open) {
+  drawer.classList.toggle("open", open);
+  overlay.classList.toggle("open", open);
+  drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  if (open) $("f-host").focus();
+}
+
+$("btn-refresh").onclick = refresh;
+$("origin").textContent = location.host;
+$("btn-settings").onclick = () => openDrawer(true);
+$("btn-empty-add").onclick = () => openDrawer(true);
+$("btn-close").onclick = () => openDrawer(false);
+overlay.onclick = () => openDrawer(false);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") openDrawer(false); });
+
+$("form-add").onsubmit = async (e) => {
+  e.preventDefault();
+  const save = $("btn-save");
+  const body = {
+    name: $("f-name").value.trim(),
+    host: $("f-host").value.trim(),
+    port: Number($("f-port").value) || 443,
+    user: $("f-user").value.trim(),
+    password: $("f-pass").value,
+  };
+  save.disabled = true;
+  save.textContent = "验证中…";
+  try {
+    const res = await fetch("/api/hosts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error?.message || "保存失败");
+    $("form-add").reset();
+    $("f-port").value = "443";
+    $("f-user").value = "root";
+    openDrawer(false);
+    toast(`已接入 ${data.host.name}（${data.info.product || "ESXi"} ${data.info.version || ""}）`);
+    await refresh();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    save.disabled = false;
+    save.textContent = "验证并保存";
+  }
+};
+
+refresh();
+</script>
+</body>
+</html>
