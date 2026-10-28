@@ -141,8 +141,9 @@ def machine_key() -> bytes:
 def _fernet():
     if _fernet_cache["obj"] is None:
         from cryptography.fernet import Fernet  # 只有非 Windows 才需要
-        with _key_lock:
-            _fernet_cache["obj"] = Fernet(machine_key())
+        # 注意：不要在这里再套 `with _key_lock`——machine_key() 自己会拿同一把
+        # 非重入锁，套上就是自己等自己（第一次接主机就整进程挂死）。
+        _fernet_cache["obj"] = Fernet(machine_key())
     return _fernet_cache["obj"]
 
 

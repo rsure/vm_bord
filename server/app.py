@@ -303,6 +303,9 @@ class Handler(BaseHTTPRequestHandler):
                     "port": self.server.server_port, "auth": _AUTH_ON,
                 })
             if not self._authed():
+                # 这里不读请求体，直接关连接：留着 body 在 socket 里，下一个
+                # keep-alive 请求会把它当成请求行，服务端报 400 后整条连接报废。
+                self.close_connection = True
                 if path.startswith("/api/"):
                     return self._fail(401, "auth", "请先登录")
                 return self._redirect("/login")
@@ -740,10 +743,12 @@ class LocalServer(ThreadingHTTPServer):
     """独占绑定的本地服务。
 
     Windows 上 SO_REUSEADDR 不是"复用"而是"允许抢占"：两个进程能同时绑同一个
-    端口，连接落到谁那儿说不清。这里关掉它，让重绑直接失败，好走端口顺延。
+    端口，连接落到谁那儿说不清，所以必须关掉，让重绑直接失败、好走端口顺延。
+    POSIX 上它只是允许跨过 TIME_WAIT，抢不走正在监听的端口，开着才能让服务
+    重启后立刻回到原端口，而不是被前一秒的 TIME_WAIT 顶到 8788。
     """
 
-    allow_reuse_address = False
+    allow_reuse_address = sys.platform != "win32"
     daemon_threads = True
 
     def handle_error(self, request, client_address):
